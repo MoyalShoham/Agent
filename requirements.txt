@@ -6,4 +6,8 @@ langchain-anthropic
 python-dotenv
 pydantic
 duckduckgo-search
+google-search-results
+langchain-google
+langchain-google-community
+requests
 
