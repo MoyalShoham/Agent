@@ -38,7 +38,7 @@ agent = create_tool_calling_agent(
     tools=tools,
 )
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-query = "What can i help you research today?"
+query = input("What can i help you research today?")
 raw_response = agent_executor.invoke(
     {
         "query": query,
