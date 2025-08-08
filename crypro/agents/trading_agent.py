@@ -2,7 +2,6 @@ from binance.client import Client
 import os
 
 def run_trading_agent(analysis_result):
-    # You must set your Binance API keys in your .env file
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
     client = Client(api_key, api_secret)
