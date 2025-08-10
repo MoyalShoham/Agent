@@ -1,3 +1,4 @@
+from trading_bot.utils.risk_monitor import RiskMonitor
 
 import asyncio
 import logging
@@ -22,6 +23,7 @@ class ManagerAgent:
         self.trail_perc = float(os.getenv('TRAILING_STOP_PERC', 1.5))
         self.take_profit_perc = float(os.getenv('TAKE_PROFIT_PERC', 2.0))
         self.position_sizing_mode = os.getenv('POSITION_SIZING_MODE', 'fixed')
+        self.risk_monitor = RiskMonitor()
         logger.info("ManagerAgent initialized with super-broker features.")
 
     def register_agent(self, name, agent):
@@ -36,7 +38,7 @@ class ManagerAgent:
             logger.error(f"Recipient agent {message.recipient} not found.")
 
 
-    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "SOLUSDT", "DOGEUSDT"]
+    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "SOLUSDT", "DOGEUSDT", "SHIBUSDT", "DOTUSDT", "MATICUSDT", "LINKUSDT", "LTCUSDT", "AVAXUSDT", "UNIUSDT", "XLMUSDT"]
 
     async def research_and_add_hot_coin(self, binance, min_change=None, min_volume=None):
         """Research and add a new hot coin to the symbols list if not already present. Logs analytics on top movers."""
@@ -91,15 +93,10 @@ class ManagerAgent:
         last_summary_time = datetime.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
         unique_coins_traded = set()
         trade_results = []  # (status, qty)
-        # Modular strategy loader
-        strategy_modules = {}
-        for fname in os.listdir(os.path.join(os.path.dirname(__file__), '../strategies')):
-            if fname.endswith('.py') and not fname.startswith('__'):
-                mod_name = f"trading_bot.strategies.{fname[:-3]}"
-                try:
-                    strategy_modules[fname[:-3]] = importlib.import_module(mod_name)
-                except Exception as e:
-                    logger.error(f"Failed to load strategy {mod_name}: {e}")
+
+        # Use StrategyManager for multi-strategy consensus
+        from trading_bot.strategies.strategy_manager import StrategyManager
+        strategy_manager = StrategyManager()
 
         while True:
             logger.info(f"ManagerAgent heartbeat: {datetime.datetime.utcnow().isoformat()}")
@@ -158,19 +155,17 @@ class ManagerAgent:
                     # ML signal
                     ml_signal = generate_ml_signal(market_data.df if hasattr(market_data, 'df') else None)
                     logger.info(f"ML signal for {symbol}: {ml_signal}")
-                    # Modular strategy (use first loaded for demo)
-                    strategy_signal = None
-                    for strat in strategy_modules.values():
-                        try:
-                            strategy_signal = strat.generate_signal(market_data.df if hasattr(market_data, 'df') else None)
-                            logger.info(f"Strategy {strat.__name__} signal: {strategy_signal}")
-                            break
-                        except Exception as e:
-                            logger.error(f"Strategy error: {e}")
+                    # Multi-strategy consensus
+                    strategy_signal = strategy_manager.consensus_signal(market_data.df if hasattr(market_data, 'df') else None)
+                    logger.info(f"StrategyManager consensus signal: {strategy_signal}")
                     # Use analysis agent as fallback
                     recommendation = await analysis_agent.analyze(market_data)
                     logger.info(f"AnalysisAgent recommendation: {recommendation}")
-                    rec_text = (strategy_signal or ml_signal or recommendation.get("recommendation", "")).lower()
+                    # If both strategy and ML signal are 'hold', use analysis agent's recommendation
+                    if (strategy_signal == 'hold' or strategy_signal is None) and (ml_signal == 'hold' or ml_signal is None):
+                        rec_text = recommendation.get("recommendation", "").lower()
+                    else:
+                        rec_text = (strategy_signal or ml_signal or recommendation.get("recommendation", "")).lower()
                     fee = market_data.indicators.get("fee", 0.001)
                     # Risk management: stop trading if daily loss exceeded
                     if self.daily_loss <= -self.max_daily_loss:
@@ -185,11 +180,12 @@ class ManagerAgent:
                     price = market_data.price
                     min_qty, step_size = binance.get_lot_size(symbol)
                     min_notional = binance.get_min_notional(symbol)
+                    # Dynamic risk-based position sizing
                     if self.position_sizing_mode == 'fixed':
-                        qty = (usdt_balance * 0.8) / price if price > 0 else 0
+                        position_frac = 0.8
                     else:
-                        # Placeholder for advanced sizing
-                        qty = (usdt_balance * 0.8) / price if price > 0 else 0
+                        position_frac = self.risk_monitor.adapt_position_size()
+                    qty = (usdt_balance * position_frac) / price if price > 0 else 0
                     if step_size > 0:
                         qty = qty - (qty % step_size)
                     qty = round(qty, 8)
@@ -243,7 +239,9 @@ class ManagerAgent:
                                 order = binance.create_order(symbol, "BUY", float(fmt_qty))
                                 logger.info(f"BUY order placed: {order}")
                                 binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "SUCCESS", str(order))
-                                self.daily_loss -= qty * price + est_fee
+                                trade_pnl = -qty * price - est_fee
+                                self.daily_loss += trade_pnl
+                                self.risk_monitor.update(trade_pnl)
                                 trade_results.append(("SUCCESS", qty))
                                 send_notification(f"BUY {symbol} {qty} at {price}")
                             except Exception as oe:
@@ -279,7 +277,9 @@ class ManagerAgent:
                                 order = binance.create_order(symbol, "SELL", float(fmt_qty))
                                 logger.info(f"SELL order placed: {order}")
                                 binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "SUCCESS", str(order))
-                                self.daily_loss += qty * price - est_fee
+                                trade_pnl = qty * price - est_fee
+                                self.daily_loss += trade_pnl
+                                self.risk_monitor.update(trade_pnl)
                                 trade_results.append(("SUCCESS", qty))
                                 send_notification(f"SELL {symbol} {qty} at {price}")
                             except Exception as oe:
