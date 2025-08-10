@@ -5,6 +5,21 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class BinanceClient:
+    def get_total_usdt_value(self):
+        """Estimate total portfolio value in USDT (sum of all assets converted to USDT)."""
+        portfolio = self.get_portfolio()
+        total = 0.0
+        for asset, amount in portfolio.items():
+            if asset == 'USDT':
+                total += amount
+            else:
+                symbol = f"{asset}USDT"
+                try:
+                    price = self.get_price(symbol)
+                    total += amount * price
+                except Exception:
+                    continue  # skip assets without USDT pair
+        return total
     def bollinger_bands(self, prices, window=20, num_std=2):
         if len(prices) < window:
             return None, None, None
@@ -155,10 +170,15 @@ class BinanceClient:
         log_file = os.path.join(os.path.dirname(__file__), '../../trade_log.csv')
         log_file = os.path.abspath(log_file)
         file_exists = os.path.isfile(log_file)
+        current_total_usdt = None
+        try:
+            current_total_usdt = round(self.get_total_usdt_value(), 4)
+        except Exception:
+            current_total_usdt = ''
         with open(log_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
             if not file_exists:
-                writer.writerow(["timestamp", "action", "symbol", "qty", "price", "fee", "status", "details"])
+                writer.writerow(["timestamp", "action", "symbol", "qty", "price", "fee", "status", "details", "current_total_usdt"])
             writer.writerow([
                 datetime.datetime.utcnow().isoformat(),
                 action,
@@ -167,7 +187,8 @@ class BinanceClient:
                 price,
                 fee,
                 status,
-                details
+                details,
+                current_total_usdt
             ])
     def get_trade_fee(self, symbol: str) -> float:
         try:
