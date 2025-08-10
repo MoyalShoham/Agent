@@ -1,3 +1,31 @@
+def plot_strategy_performance():
+    import glob
+    import json
+    import os
+    files = glob.glob('optimized_*.json')
+    if not files:
+        print("No optimized strategy files found.")
+        return
+    names, pnls, trades = [], [], []
+    for f in files:
+        strat = os.path.basename(f).replace('optimized_', '').replace('.json', '')
+        with open(f, 'r') as fp:
+            data = json.load(fp)
+            result = data.get('result', {})
+            names.append(strat)
+            pnls.append(result.get('pnl', 0))
+            trades.append(result.get('trades', 0))
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10,5))
+    plt.bar(names, pnls, color='green', alpha=0.7, label='PnL')
+    plt.ylabel('PnL')
+    plt.title('Strategy PnL (last optimization)')
+    plt.show()
+    plt.figure(figsize=(10,5))
+    plt.bar(names, trades, color='blue', alpha=0.7, label='Trades')
+    plt.ylabel('Number of Trades')
+    plt.title('Strategy Trades (last optimization)')
+    plt.show()
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -45,11 +73,13 @@ def plot_backtest_results(results_dir='backtests'):
     plt.show()
 
 if __name__ == '__main__':
-    print("1. Portfolio Analytics Summary\n2. Compare Backtest Results")
-    choice = input("Select plot type (1/2): ")
+    print("1. Portfolio Analytics Summary\n2. Compare Backtest Results\n3. Strategy Performance")
+    choice = input("Select plot type (1/2/3): ")
     if choice == '1':
         plot_analytics_summary()
     elif choice == '2':
         plot_backtest_results()
+    elif choice == '3':
+        plot_strategy_performance()
     else:
         print("Invalid choice.")

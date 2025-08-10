@@ -82,6 +82,9 @@ class ManagerAgent:
         from trading_bot.agents.analysis_agent import AnalysisAgent
         from trading_bot.utils.binance_client import BinanceClient
         import datetime
+        from trading_bot.strategies.strategy_manager import StrategyManager
+        strategy_manager = StrategyManager()
+        strategy_manager.reload_meta_learner_periodically()
         analysis_agent = AnalysisAgent()
         binance = BinanceClient()
         self.register_agent("analysis", analysis_agent)
@@ -153,19 +156,28 @@ class ManagerAgent:
                     sentiment = fetch_sentiment(symbol)
                     logger.info(f"Sentiment for {symbol}: {sentiment['sentiment_score']}")
                     # ML signal
-                    ml_signal = generate_ml_signal(market_data.df if hasattr(market_data, 'df') else None)
+                    df = getattr(market_data, 'df', None)
+                    if df is not None:
+                        ml_signal = generate_ml_signal(df)
+                        strategy_signal = strategy_manager.consensus_signal(df)
+                    else:
+                        ml_signal = 'hold'
+                        strategy_signal = 'hold'
                     logger.info(f"ML signal for {symbol}: {ml_signal}")
-                    # Multi-strategy consensus
-                    strategy_signal = strategy_manager.consensus_signal(market_data.df if hasattr(market_data, 'df') else None)
                     logger.info(f"StrategyManager consensus signal: {strategy_signal}")
                     # Use analysis agent as fallback
                     recommendation = await analysis_agent.analyze(market_data)
                     logger.info(f"AnalysisAgent recommendation: {recommendation}")
                     # If both strategy and ML signal are 'hold', use analysis agent's recommendation
+                    # Defensive: ensure recommendation is a dict and has 'recommendation' key
+                    rec_val = ""
+                    if isinstance(recommendation, dict):
+                        rec_val = recommendation.get("recommendation", "")
+                    # If both strategy and ML signal are 'hold', use analysis agent's recommendation
                     if (strategy_signal == 'hold' or strategy_signal is None) and (ml_signal == 'hold' or ml_signal is None):
-                        rec_text = recommendation.get("recommendation", "").lower()
+                        rec_text = str(rec_val).lower() if rec_val is not None else "hold"
                     else:
-                        rec_text = (strategy_signal or ml_signal or recommendation.get("recommendation", "")).lower()
+                        rec_text = str(strategy_signal or ml_signal or rec_val or "hold").lower()
                     fee = market_data.indicators.get("fee", 0.001)
                     # Risk management: stop trading if daily loss exceeded
                     if self.daily_loss <= -self.max_daily_loss:
@@ -182,7 +194,7 @@ class ManagerAgent:
                     min_notional = binance.get_min_notional(symbol)
                     # Dynamic risk-based position sizing
                     if self.position_sizing_mode == 'fixed':
-                        position_frac = 0.8
+                        position_frac = 1.0
                     else:
                         position_frac = self.risk_monitor.adapt_position_size()
                     qty = (usdt_balance * position_frac) / price if price > 0 else 0
@@ -261,7 +273,7 @@ class ManagerAgent:
                             continue
                         min_qty, step_size = binance.get_lot_size(symbol)
                         min_notional = binance.get_min_notional(symbol)
-                        qty = asset_balance * 0.8
+                        qty = asset_balance * 1.0
                         if step_size > 0:
                             qty = qty - (qty % step_size)
                         qty = round(qty, 8)
