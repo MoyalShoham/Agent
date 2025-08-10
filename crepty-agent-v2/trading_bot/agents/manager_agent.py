@@ -8,6 +8,14 @@ class ManagerAgent:
     def __init__(self):
         self.agents = {}
         self.loop = asyncio.get_event_loop()
+        self.daily_loss = 0.0
+        self.max_daily_loss = float(getattr(settings, 'MAX_DAILY_LOSS', 1000))
+        logger.info("ManagerAgent initialized.")
+    def __init__(self):
+        self.agents = {}
+        self.loop = asyncio.get_event_loop()
+        self.daily_loss = 0.0
+        self.max_daily_loss = float(getattr(settings, 'MAX_DAILY_LOSS', 1000))
         logger.info("ManagerAgent initialized.")
 
     def register_agent(self, name, agent):
@@ -33,8 +41,15 @@ class ManagerAgent:
         binance = BinanceClient()
         self.register_agent("analysis", analysis_agent)
 
+        import datetime
+        last_pnl_check = datetime.datetime.utcnow().date()
         while True:
             logger.info(f"ManagerAgent heartbeat: {datetime.datetime.utcnow().isoformat()}")
+            # Reset daily loss at UTC midnight
+            now = datetime.datetime.utcnow().date()
+            if now != last_pnl_check:
+                self.daily_loss = 0.0
+                last_pnl_check = now
             for symbol in symbols:
                 research_agent = ResearchAgent(symbol)
                 self.register_agent(f"research_{symbol}", research_agent)
@@ -45,6 +60,10 @@ class ManagerAgent:
                     logger.info(f"AnalysisAgent recommendation: {recommendation}")
                     rec_text = recommendation.get("recommendation", "").lower()
                     fee = market_data.indicators.get("fee", 0.001)
+                    # Risk management: stop trading if daily loss exceeded
+                    if self.daily_loss <= -self.max_daily_loss:
+                        logger.warning(f"Max daily loss reached: {self.daily_loss}. Trading paused for today.")
+                        continue
                     if "buy" in rec_text:
                         usdt_balance = binance.get_balance("USDT")
                         price = market_data.price
@@ -52,11 +71,14 @@ class ManagerAgent:
                             logger.warning(f"Skipping {symbol} buy: price is zero.")
                             continue
                         min_qty, step_size = binance.get_lot_size(symbol)
+                        min_notional = binance.get_min_notional(symbol)
                         qty = (usdt_balance * 0.4) / price if price > 0 else 0
                         # Adjust qty to step size
                         if step_size > 0:
                             qty = qty - (qty % step_size)
-                        qty = round(qty, 6)
+                        qty = round(qty, 8)
+                        notional = qty * price
+                        fmt_qty = binance.format_quantity(qty, step_size)
                         # If not enough USDT, auto-convert largest non-USDT asset to USDT
                         min_usdt_needed = price * min_qty
                         if usdt_balance < min_usdt_needed:
@@ -93,17 +115,19 @@ class ManagerAgent:
                                 logger.error(f"Error during auto-convert: {ce}")
                         est_fee = qty * price * fee
                         logger.info(f"Estimated BUY fee for {symbol}: {est_fee} USDT")
-                        if qty >= min_qty and est_fee < (qty * price * 0.01):
+                        if qty >= min_qty and notional >= min_notional and est_fee < (qty * price * 0.01):
                             try:
-                                order = binance.create_order(symbol, "BUY", qty)
+                                order = binance.create_order(symbol, "BUY", float(fmt_qty))
                                 logger.info(f"BUY order placed: {order}")
-                                binance.log_trade("BUY", symbol, qty, price, est_fee, "SUCCESS", str(order))
+                                binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "SUCCESS", str(order))
+                                # Track P&L for risk management (simulate as negative USDT spent)
+                                self.daily_loss -= qty * price + est_fee
                             except Exception as oe:
                                 logger.error(f"BUY order failed: {oe}")
-                                binance.log_trade("BUY", symbol, qty, price, est_fee, "FAILED", str(oe))
+                                binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe))
                         else:
-                            logger.info(f"BUY skipped for {symbol} due to high fee, zero qty, or below min lot size.")
-                            binance.log_trade("BUY", symbol, qty, price, est_fee, "SKIPPED", "High fee, zero qty, or below min lot size")
+                            logger.info(f"BUY skipped for {symbol} due to high fee, zero qty, below min lot size, or notional.")
+                            binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional")
                     elif "sell" in rec_text:
                         base_asset = symbol.replace("USDT", "")
                         asset_balance = binance.get_balance(base_asset)
@@ -111,23 +135,28 @@ class ManagerAgent:
                             logger.warning(f"Skipping {symbol} sell: price is zero.")
                             continue
                         min_qty, step_size = binance.get_lot_size(symbol)
+                        min_notional = binance.get_min_notional(symbol)
                         qty = asset_balance * 0.4
                         if step_size > 0:
                             qty = qty - (qty % step_size)
-                        qty = round(qty, 6)
+                        qty = round(qty, 8)
+                        notional = qty * market_data.price
+                        fmt_qty = binance.format_quantity(qty, step_size)
                         est_fee = qty * market_data.price * fee
                         logger.info(f"Estimated SELL fee for {symbol}: {est_fee} USDT")
-                        if qty >= min_qty and est_fee < (qty * market_data.price * 0.01):
+                        if qty >= min_qty and notional >= min_notional and est_fee < (qty * market_data.price * 0.01):
                             try:
-                                order = binance.create_order(symbol, "SELL", qty)
+                                order = binance.create_order(symbol, "SELL", float(fmt_qty))
                                 logger.info(f"SELL order placed: {order}")
-                                binance.log_trade("SELL", symbol, qty, market_data.price, est_fee, "SUCCESS", str(order))
+                                binance.log_trade("SELL", symbol, float(fmt_qty), market_data.price, est_fee, "SUCCESS", str(order))
+                                # Track P&L for risk management (simulate as positive USDT received)
+                                self.daily_loss += qty * market_data.price - est_fee
                             except Exception as oe:
                                 logger.error(f"SELL order failed: {oe}")
-                                binance.log_trade("SELL", symbol, qty, market_data.price, est_fee, "FAILED", str(oe))
+                                binance.log_trade("SELL", symbol, float(fmt_qty), market_data.price, est_fee, "FAILED", str(oe))
                         else:
-                            logger.info(f"SELL skipped for {symbol} due to high fee, zero qty, or below min lot size.")
-                            binance.log_trade("SELL", symbol, qty, market_data.price, est_fee, "SKIPPED", "High fee, zero qty, or below min lot size")
+                            logger.info(f"SELL skipped for {symbol} due to high fee, zero qty, below min lot size, or notional.")
+                            binance.log_trade("SELL", symbol, float(fmt_qty), market_data.price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional")
                     elif "sell" in rec_text:
                         base_asset = symbol.replace("USDT", "")
                         asset_balance = binance.get_balance(base_asset)

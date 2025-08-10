@@ -21,13 +21,28 @@ class ResearchAgent:
             volume = float(ticker.get('volume', 0.0)) if 'volume' in ticker else 0.0
             quote_volume = float(ticker.get('quoteVolume', 0.0)) if 'quoteVolume' in ticker else 0.0
             fee = self.binance.get_trade_fee(self.symbol)
+            # Add SMA indicator
+            closes = self.binance.get_historical_prices(self.symbol, interval='1h', limit=30)
+            sma_14 = self.binance.simple_moving_average(closes, window=14) if closes else None
+            ema_14 = self.binance.exponential_moving_average(closes, window=14) if closes else None
+            rsi_14 = self.binance.relative_strength_index(closes, window=14) if closes else None
+            bb_upper, bb_mid, bb_lower = self.binance.bollinger_bands(closes, window=20) if closes else (None, None, None)
+            indicators = {
+                "fee": fee,
+                "sma_14": sma_14,
+                "ema_14": ema_14,
+                "rsi_14": rsi_14,
+                "bb_upper": bb_upper,
+                "bb_mid": bb_mid,
+                "bb_lower": bb_lower
+            }
             data = MarketData(
                 symbol=self.symbol,
                 price=price,
                 volume=volume,
                 market_cap=quote_volume,
                 timestamp=datetime.utcnow(),
-                indicators={"fee": fee}
+                indicators=indicators
             )
             logger.info(f"Fetched market data: {data}")
             return data

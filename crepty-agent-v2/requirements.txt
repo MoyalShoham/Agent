@@ -9,3 +9,4 @@ requests
 websocket-client
 loguru
 pydantic-settings
+matplotlib
