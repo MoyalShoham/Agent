@@ -1,9 +1,17 @@
 {
     "cSpell.words": [
+        "aiohttp",
+        "beautifulsoup",
+        "crypro",
         "dotenv",
         "duckduckgo",
         "langchain",
+        "loguru",
+        "pycoingecko",
         "pydantic",
-        "Shoham"
+        "pytest",
+        "Shoham",
+        "snscrape",
+        "sntwitter"
     ]
 }

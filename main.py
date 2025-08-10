@@ -1,52 +1,70 @@
+# from dotenv import load_dotenv
+# from pydantic import BaseModel
+# from langchain_openai import ChatOpenAI
+# from langchain_core.prompts import ChatPromptTemplate
+# from langchain_core.output_parsers import PydanticOutputParser
+# from langchain.agents import create_tool_calling_agent, AgentExecutor
+# from tools import search_tool
+
+# load_dotenv()
+
+# class ResearchResponse(BaseModel):
+#     topic: str
+#     summary: str
+#     sources: list[str]
+#     tools_used: list[str]
+
+# gpt = ChatOpenAI(model="gpt-4o-mini")
+# parser = PydanticOutputParser(pydantic_object=ResearchResponse)
+# prompt = ChatPromptTemplate.from_messages(
+#     [
+#         (
+#             "system",
+#             """
+#             You are a research assistant that will help generate a research paper.
+#             Answer the user query and use necessary tools to gather information.
+#             Wrap the output in this format and provide no other text\n{format_instructions}
+#             """
+#         ),
+#         ("placeholder", "{chat_history}"),
+#         ("human", "{query} {user_name}"),
+#         ("placeholder", "{agent_scratchpad}"),
+#     ]
+# ).partial(format_instructions=parser.get_format_instructions())
+# tools=[search_tool]
+# agent = create_tool_calling_agent(
+#     llm=gpt,
+#     prompt=prompt,
+#     tools=tools,
+# )
+# agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+# query = input("What can i help you research today?")
+# raw_response = agent_executor.invoke(
+#     {
+#         "query": query,
+#         "user_name": "Shoham",
+#     }
+# )
+# try: 
+#     structured_response = parser.parse(raw_response.get("output"))
+#     print(structured_response)
+# except Exception as e:
+#     print(f"Error parsing response: {e}")
+
+import time
+from crypro.core.agent_manager import run_all_agents 
 from dotenv import load_dotenv
-from pydantic import BaseModel
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
-from langchain.agents import create_tool_calling_agent, AgentExecutor
-from tools import search_tool
 
-load_dotenv()
 
-class ResearchResponse(BaseModel):
-    topic: str
-    summary: str
-    sources: list[str]
-    tools_used: list[str]
+def main():
+    load_dotenv()
+    print("🔁 Starting Crypto AI Agent Loop...")
+    while True:
+        try:
+            run_all_agents()
+        except Exception as e:
+            print(f"❌ Error during agent execution: {e}")
+        time.sleep(300)  # Run every 5 minutes
 
-gpt = ChatOpenAI(model="gpt-4o-mini")
-parser = PydanticOutputParser(pydantic_object=ResearchResponse)
-prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """
-            You are a research assistant that will help generate a research paper.
-            Answer the user query and use necessary tools to gather information.
-            Wrap the output in this format and provide no other text\n{format_instructions}
-            """
-        ),
-        ("placeholder", "{chat_history}"),
-        ("human", "{query} {user_name}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ]
-).partial(format_instructions=parser.get_format_instructions())
-tools=[search_tool]
-agent = create_tool_calling_agent(
-    llm=gpt,
-    prompt=prompt,
-    tools=tools,
-)
-agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-query = input("What can i help you research today?")
-raw_response = agent_executor.invoke(
-    {
-        "query": query,
-        "user_name": "Shoham",
-    }
-)
-try: 
-    structured_response = parser.parse(raw_response.get("output"))
-    print(structured_response)
-except Exception as e:
-    print(f"Error parsing response: {e}")
+if __name__ == "__main__":
+    main()

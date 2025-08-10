@@ -10,4 +10,12 @@ google-search-results
 langchain-google
 langchain-google-community
 requests
-
+openai
+pycoingecko
+python-binance
+snscrape
+beautifulsoup4
+aiohttp
+loguru
+pytest
+snscrape

@@ -1,0 +1,12 @@
+openai==0.28
+python-binance
+pandas
+asyncio
+pydantic
+loguru
+python-dotenv
+requests
+websocket-client
+loguru
+pydantic-settings
+matplotlib
