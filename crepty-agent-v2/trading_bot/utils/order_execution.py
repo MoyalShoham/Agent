@@ -9,6 +9,7 @@ from trading_bot.execution.position_manager import PositionManager
 from trading_bot.utils.event_bus import publish
 from http import HTTPStatus
 from math import floor
+import os
 
 try:
     from trading_bot.exchange.binance_futures_gateway import BinanceFuturesGateway, BinanceAPIError
@@ -71,6 +72,12 @@ def submit_signal(symbol: str, signal: str, mark_price: float, atr: float | None
     if not settings.FUTURES_ENABLED or _gateway is None or _position_manager is None:
         logging.debug("Futures disabled or gateway not available; skipping submit_signal.")
         return None
+    # --- Pyramiding config (env driven) ---
+    pyramid_enabled = os.getenv('PYRAMID_ENABLED', '1') == '1'
+    pyramid_layers = int(os.getenv('PYRAMID_LAYERS', '3'))
+    pyramid_increment = float(os.getenv('PYRAMID_INCREMENT', '0.5'))  # +50% base per added layer
+    tp_atr_mult = float(os.getenv('PYRAMID_TP_ATR_MULT', '2.0'))      # scale out trigger (unrealized / (atr))
+    scale_out_one = os.getenv('PYRAMID_SCALE_OUT_MODE', 'one') == 'one'  # remove one layer at a time
     # Track invalid symbols (module-level cache)
     global _invalid_symbols
     try:
@@ -87,11 +94,47 @@ def submit_signal(symbol: str, signal: str, mark_price: float, atr: float | None
         logging.debug(f"[SKIP] {symbol} theoretical_max_notional {theoretical_max_notional:.4f} < min_notional {min_notional:.4f}")
         return None
     pos = _position_manager.get_position(symbol)
-    qty_target = 0.0
+    base_target = 0.0
+    if signal in ('buy','sell'):
+        base_qty = _position_manager.target_position_size(symbol, mark_price, atr=atr)
+        direction = 1 if signal == 'buy' else -1
+        base_target = direction * base_qty
+    # Hold -> potential scale-out evaluation (only if pyramiding & multiple layers & unrealized TP)
+    if signal == 'hold' and pyramid_enabled and pos.size != 0 and atr and atr > 0:
+        unreal = pos.unrealized_pnl(mark_price)
+        # risk unit ~ atr * position_size_unit -> approximate using atr
+        if unreal / atr >= tp_atr_mult:
+            # reduce by one layer (if layered)
+            base_unit = _position_manager.target_position_size(symbol, mark_price, atr=atr)
+            if base_unit > 0:
+                current_layers = int(abs(pos.size) / base_unit + 1e-9)
+                target_layers = current_layers - 1 if scale_out_one else 1
+                new_abs = base_unit * (1 + pyramid_increment * (target_layers-1)) if target_layers > 0 else 0
+                desired_target = new_abs * (1 if pos.size > 0 else -1)
+                if abs(desired_target - pos.size) / max(abs(pos.size), 1e-9) > 0.05:  # meaningful change
+                    logging.info(f"[PYRAMID][TP] Scaling out {symbol}: layers {current_layers}->{target_layers} unreal/ATR={unreal/atr:.2f}")
+                    # Forge synthetic signal to adjust toward desired_target
+                    signal = 'buy' if desired_target > pos.size else 'sell'
+                    base_target = desired_target
+    # Pyramiding for same-direction continuation
+    if pyramid_enabled and signal in ('buy','sell') and base_target != 0:
+        base_unit = _position_manager.target_position_size(symbol, mark_price, atr=atr)
+        if base_unit > 0:
+            current_layers = int(abs(pos.size) / base_unit + 1e-9) if pos.size * base_target > 0 else 0
+            # criteria: same direction continuation & unrealized >= 0 (avoid adding to losers)
+            unreal = pos.unrealized_pnl(mark_price) if pos.size * base_target > 0 else 0.0
+            can_add = (pos.size * base_target > 0) and (current_layers < pyramid_layers) and (unreal >= 0)
+            if can_add:
+                target_layers = current_layers + 1
+                # compute pyramided absolute target
+                pyramided_abs = base_unit * (1 + pyramid_increment * (target_layers-1))
+                base_target = pyramided_abs * (1 if base_target > 0 else -1)
+                logging.debug(f"[PYRAMID] {symbol} layering {current_layers}->{target_layers} base_unit={base_unit:.6f} new_target={base_target:.6f} unreal={unreal:.4f}")
+    # Derive final desired target qty (qty_target)
     if signal == 'buy':
-        qty_target = _position_manager.target_position_size(symbol, mark_price, atr=atr)
+        qty_target = base_target if base_target else _position_manager.target_position_size(symbol, mark_price, atr=atr)
     elif signal == 'sell':
-        qty_target = -_position_manager.target_position_size(symbol, mark_price, atr=atr)
+        qty_target = base_target if base_target else -_position_manager.target_position_size(symbol, mark_price, atr=atr)
     else:
         qty_target = 0.0
     delta = qty_target - pos.size

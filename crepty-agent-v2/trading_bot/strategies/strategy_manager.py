@@ -117,14 +117,26 @@ class StrategyManager:
 
     def set_research_state(self, snapshot: dict):
         self.research_state = snapshot
+        # Optionally adjust internal weights or flags later
+        return self.research_state
 
     def consensus_signal(self, df):
         # Enrich indicators early
         enrich_dataframe(df)
+        # Integrate research macro bias influence (lightweight): if strong bias and meta learner absent, nudge weights
+        research_bias = None
+        if self.research_state and isinstance(self.research_state, dict):
+            research_bias = self.research_state.get('macro_bias')
         # Reload optimized params each call for live updating
         self.optimized_params = self._load_optimized_params()
         regime = detect_regime(df)
         signals = self.get_signals(df)
+        # Simple bias override: if majority hold but research bias present, convert to bias direction
+        if research_bias in ('bullish','bearish') and signals and all(s == 'hold' for _, s in signals):
+            if research_bias == 'bullish':
+                return 'buy'
+            if research_bias == 'bearish':
+                return 'sell'
         logger.debug(f"[CONSENSUS] Regime={regime} raw_signals={{" + ", ".join(f"{name.split('.')[-1]}:{sig}" for name, sig in signals) + "}}")
         if not signals:
             return 'hold'

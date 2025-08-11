@@ -3,11 +3,15 @@ from loguru import logger
 from trading_bot.utils.binance_client import BinanceClient
 from trading_bot.utils.data_models import MarketData
 from datetime import datetime
+from trading_bot.utils.openai_client import OpenAIClient
+from typing import Dict, Any
+from .research_data_sources import fetch_combined_research
 
 class ResearchAgent:
     def __init__(self, symbol: str):
         self.symbol = symbol
         self.binance = BinanceClient()
+        self.openai = OpenAIClient()
         logger.info(f"ResearchAgent initialized for {symbol}")
 
     async def fetch_market_data(self) -> MarketData:
@@ -21,7 +25,6 @@ class ResearchAgent:
             volume = float(ticker.get('volume', 0.0)) if 'volume' in ticker else 0.0
             quote_volume = float(ticker.get('quoteVolume', 0.0)) if 'quoteVolume' in ticker else 0.0
             fee = self.binance.get_trade_fee(self.symbol)
-            # Add SMA indicator
             closes = self.binance.get_historical_prices(self.symbol, interval='1h', limit=30)
             sma_14 = self.binance.simple_moving_average(closes, window=14) if closes else None
             ema_14 = self.binance.exponential_moving_average(closes, window=14) if closes else None
@@ -50,6 +53,44 @@ class ResearchAgent:
             logger.error(f"Error fetching market data: {e}")
             raise
 
+    async def _synthesize(self, enriched: Dict[str, Any]) -> Dict[str, Any]:
+        prompt = f"""
+        Act as a senior crypto financial analyst. Given the JSON context below produce ONLY a JSON object with keys:
+        {{
+          "macro_bias": "bullish|bearish|neutral",
+          "sentiment_score": float (0-1),
+          "key_risks": [str],
+          "catalysts": [str],
+          "confidence": float (0-1),
+          "narrative": str
+        }}
+        Context: {enriched}
+        Rules:
+        - macro_bias must match evidence in context.
+        - sentiment_score midpoint 0.5 = neutral.
+        - Provide 1-5 risks & catalysts each if available.
+        Output ONLY JSON.
+        """
+        try:
+            data = self.openai.ask_json(prompt)
+            return data
+        except Exception as e:
+            logger.error(f"Research synthesis error: {e}")
+            return {"macro_bias": "neutral", "sentiment_score": 0.5, "key_risks": [], "catalysts": [], "confidence": 0.3, "narrative": "fallback"}
+
+    async def research_snapshot(self) -> Dict[str, Any]:
+        external = await fetch_combined_research()
+        # Placeholder for funding/OI (requires futures endpoints)
+        snapshot = {
+            **external,
+            "funding_rate": None,
+            "funding_z": None,
+            "open_interest_change_pct": None
+        }
+        synthesis = await self._synthesize(snapshot)
+        merged = {**snapshot, **synthesis}
+        logger.info(f"Research snapshot: {merged}")
+        return merged
 
     async def research(self, market_data: MarketData) -> int:
         """
@@ -62,5 +103,5 @@ class ResearchAgent:
 
     async def receive_message(self, message):
         # Example: log the received message
-        from loguru import logger
-        logger.info(f"ResearchAgent received message: {message}")
+        from loguru import logger as _l
+        _l.info(f"ResearchAgent received message: {message}")

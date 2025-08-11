@@ -59,8 +59,23 @@ class ManagerAgent:
         analysis_agent = AnalysisAgent()
         binance = BinanceClient()
         self.register_agent("analysis", analysis_agent)
-        from trading_bot.utils import order_execution
         futures_symbols = [s.strip().upper() for s in getattr(settings, 'FUTURES_SYMBOLS', 'BTCUSDT,ETHUSDT').split(',')]
+        # Filter out futures symbols not supported by current futures gateway (prevents -1121)
+        try:
+            from trading_bot.utils import order_execution as _oe
+            if _oe._gateway and hasattr(_oe._gateway, '_symbol_filters'):
+                supported = set(_oe._gateway._symbol_filters.keys())
+                original = list(futures_symbols)
+                futures_symbols = [s for s in futures_symbols if s in supported]
+                removed = set(original) - set(futures_symbols)
+                if removed:
+                    logger.warning(f"Removed unsupported futures symbols: {removed}")
+        except Exception as _ferr:
+            logger.debug(f"Futures symbol filter skip: {_ferr}")
+        core_symbol = futures_symbols[0] if futures_symbols else 'BTCUSDT'
+        core_research_agent = ResearchAgent(core_symbol)
+        research_last_time = datetime.datetime.utcnow()
+        research_interval = 300
 
         # Prepare secondary CSV log file
         csv_path = 'futures_trades_log.csv'
@@ -80,7 +95,7 @@ class ManagerAgent:
         def on_order_filled(ev):
             try:
                 append_csv([
-                    datetime.utcnow().isoformat(),
+                    datetime.datetime.utcnow().isoformat(),
                     ev.get('symbol'),
                     ev.get('signal',''),
                     ev.get('price'),
@@ -253,18 +268,18 @@ class ManagerAgent:
                                 # Get ML/ensemble signal (e.g., 1=buy, -1=sell, 0=hold)
                                 ml_signal = generate_ml_signal(micro_symbol)
                                 analysis_signal = await analysis_agent.analyze(market_data)
-                                # Convert analysis_signal to int: 1=buy, 0=hold, -1=sell
-                                analysis_recommendation = analysis_signal.get('recommendation', '').lower()
-                                if 'buy' in analysis_recommendation:
+                                # Convert analysis_signal to int using new schema key 'action' (fallback to legacy 'recommendation')
+                                analysis_action_raw = (analysis_signal.get('action') or analysis_signal.get('recommendation') or '').lower()
+                                if analysis_action_raw.startswith('buy'):
                                     analysis_signal_int = 1
-                                elif 'sell' in analysis_recommendation:
+                                elif analysis_action_raw.startswith('sell'):
                                     analysis_signal_int = -1
                                 else:
                                     analysis_signal_int = 0
                                 research_signal = await research_agent.research(market_data)
                                 # Log all signal integer values
                                 logger.info(f"[MICROCAP][SIGNALS_INT] symbol={micro_symbol}, ml_signal={ml_signal}, analysis_signal_int={analysis_signal_int}, research_signal={research_signal}")
-                                logger.info(f"[MICROCAP][SIGNALS] symbol={micro_symbol}, ml_signal={ml_signal}, analysis_signal={analysis_signal}, research_signal={research_signal}")
+                                logger.info(f"[MICROCAP][SIGNALS] symbol={micro_symbol}, ml_signal={ml_signal}, analysis_action={analysis_action_raw}, analysis_signal={analysis_signal}, research_signal={research_signal}")
                                 # Buy condition: all 3 signals agree on buy, or 2 out of 3 if relaxed
                                 if require_all_signals:
                                     buy_condition_met = (ml_signal == 1 and analysis_signal_int == 1 and research_signal == 1)
@@ -294,6 +309,19 @@ class ManagerAgent:
                 except Exception as e:
                     logger.exception(f"Error in Microcap strategy: {e}")
             # --- End conditional ---
+            # Periodic research snapshot update
+            try:
+                now_ts = datetime.datetime.utcnow()
+                if (now_ts - research_last_time).total_seconds() >= research_interval:
+                    try:
+                        snapshot = await core_research_agent.research_snapshot()
+                        strategy_manager.set_research_state(snapshot)
+                        logger.info(f"[RESEARCH] Snapshot updated: macro_bias={snapshot.get('macro_bias')} sentiment={snapshot.get('sentiment_score')}")
+                    except Exception as rse:
+                        logger.error(f"[RESEARCH] snapshot error: {rse}")
+                    research_last_time = now_ts
+            except Exception:
+                pass
             # Consensus-based futures execution (every loop on core symbols)
             try:
                 for sym in futures_symbols:
@@ -330,11 +358,10 @@ class ManagerAgent:
                         signal = strategy_manager.consensus_signal(strat_df)
                         from trading_bot.utils import order_execution as oe
                         pos_before = oe._position_manager.get_position(sym).size if oe._position_manager else 0.0
-                        order = oe.submit_signal(sym, signal, price, atr=atr)
-                        # legacy CSV append removed
+                        oe.submit_signal(sym, signal, price, atr=atr)
                     except Exception as es:
                         logger.error(f"[FUTURES_EXEC] {sym} error: {es}")
-                # Periodic snapshot every 5 minutes
+                # Snapshot code remains below
                 try:
                     if (datetime.datetime.utcnow() - last_snapshot_time).total_seconds() > 300:
                         from trading_bot.utils import order_execution as oe2
