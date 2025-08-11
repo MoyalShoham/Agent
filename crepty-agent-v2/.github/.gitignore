@@ -1,2 +1,5 @@
 /.env
 /trade_log.csv
+/train_meta_learner.py
+/trade_log_clean.csv
+/trade_log_clean_fixed.csv

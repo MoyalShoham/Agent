@@ -165,7 +165,7 @@ class BinanceClient:
             return 0.0, 1.0  # fallback
         except Exception as e:
             raise RuntimeError(f"Binance LOT_SIZE fetch error: {e}")
-    def log_trade(self, action: str, symbol: str, qty: float, price: float, fee: float, status: str, details: str = ""):
+    def log_trade(self, action: str, symbol: str, qty: float, price: float, fee: float, status: str, details: str = "", strategy: str = "unknown"):
         import csv, os, datetime
         log_file = os.path.join(os.path.dirname(__file__), '../../trade_log.csv')
         log_file = os.path.abspath(log_file)
@@ -178,7 +178,7 @@ class BinanceClient:
         with open(log_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
             if not file_exists:
-                writer.writerow(["timestamp", "action", "symbol", "qty", "price", "fee", "status", "details", "current_total_usdt"])
+                writer.writerow(["timestamp", "action", "symbol", "qty", "price", "fee", "status", "details", "strategy", "current_total_usdt"])
             writer.writerow([
                 datetime.datetime.utcnow().isoformat(),
                 action,
@@ -188,6 +188,7 @@ class BinanceClient:
                 fee,
                 status,
                 details,
+                strategy,
                 current_total_usdt
             ])
     def get_trade_fee(self, symbol: str) -> float:

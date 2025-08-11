@@ -24,7 +24,20 @@ class ManagerAgent:
         self.take_profit_perc = float(os.getenv('TAKE_PROFIT_PERC', 2.0))
         self.position_sizing_mode = os.getenv('POSITION_SIZING_MODE', 'fixed')
         self.risk_monitor = RiskMonitor()
-        logger.info("ManagerAgent initialized with super-broker features.")
+        # Advanced modules
+        from trading_bot.utils import adaptive_position_sizing, portfolio_optimizer, multi_timeframe, continuous_learning, alpha_signal_stacker, regime_switcher, order_execution, onchain_social_analytics, risk_controls, performance_monitor, backtest_simulator
+        self.adaptive_position_sizing = adaptive_position_sizing
+        self.portfolio_optimizer = portfolio_optimizer
+        self.multi_timeframe = multi_timeframe
+        self.continuous_learning = continuous_learning
+        self.alpha_signal_stacker = alpha_signal_stacker
+        self.regime_switcher = regime_switcher
+        self.order_execution = order_execution
+        self.onchain_social_analytics = onchain_social_analytics
+        self.risk_controls = risk_controls
+        self.performance_monitor = performance_monitor
+        self.backtest_simulator = backtest_simulator
+        logger.info("ManagerAgent initialized with super-broker and advanced modules.")
 
     def register_agent(self, name, agent):
         self.agents[name] = agent
@@ -77,7 +90,7 @@ class ManagerAgent:
 
 
     async def run(self):
-        logger.info("ManagerAgent running main event loop with super-broker features.")
+        logger.info("ManagerAgent running main event loop with advanced modules.")
         from trading_bot.agents.research_agent import ResearchAgent
         from trading_bot.agents.analysis_agent import AnalysisAgent
         from trading_bot.utils.binance_client import BinanceClient
@@ -97,19 +110,25 @@ class ManagerAgent:
         unique_coins_traded = set()
         trade_results = []  # (status, qty)
 
-        # Use StrategyManager for multi-strategy consensus
-        from trading_bot.strategies.strategy_manager import StrategyManager
-        strategy_manager = StrategyManager()
+        # Periodic meta-learner retraining (continuous learning)
+        import threading
+        def retrain_loop():
+            while True:
+                try:
+                    self.continuous_learning.retrain_meta_learner('trade_log.csv', 'trading_bot/utils/meta_learner_model.pkl')
+                except Exception as e:
+                    logger.error(f"Meta-learner retrain failed: {e}")
+                import time; time.sleep(3600)
+        threading.Thread(target=retrain_loop, daemon=True).start()
 
         while True:
             logger.info(f"ManagerAgent heartbeat: {datetime.datetime.utcnow().isoformat()}")
-            # Reset daily loss at UTC midnight
             now = datetime.datetime.utcnow().date()
             if now != last_pnl_check:
                 self.daily_loss = 0.0
                 last_pnl_check = now
 
-            # Research and add a new hot coin every 10 cycles (about every 5 minutes if sleep=30s)
+            # Research and add a new hot coin every 10 cycles
             hot_coin_check_counter += 1
             if hot_coin_check_counter >= 10:
                 await self.research_and_add_hot_coin(binance)
@@ -146,125 +165,116 @@ class ManagerAgent:
                 trade_results.clear()
                 last_summary_time = now_time.replace(minute=0, second=0, microsecond=0)
 
-            for symbol in self.symbols:
-                research_agent = ResearchAgent(symbol)
-                self.register_agent(f"research_{symbol}", research_agent)
+            # Portfolio optimization (capital allocation)
+            try:
+                # Example: allocate capital using optimizer (placeholder: equal weights)
+                returns = [0.01 for _ in self.symbols]  # Replace with real returns
+                cov_matrix = [[0.01 for _ in self.symbols] for _ in self.symbols]  # Replace with real cov
+                weights = self.portfolio_optimizer.optimize_portfolio(returns, cov_matrix)
+            except Exception as e:
+                logger.error(f"Portfolio optimization failed: {e}")
+                weights = [1/len(self.symbols)] * len(self.symbols)
+
+            # 70% allocation: advanced logic
+            for i, symbol in enumerate(self.symbols):
                 try:
+                    research_agent = ResearchAgent(symbol)
+                    self.register_agent(f"research_{symbol}", research_agent)
                     market_data = await research_agent.fetch_market_data()
                     logger.info(f"Fetched market data: {market_data}")
-                    # Sentiment analytics
                     sentiment = fetch_sentiment(symbol)
                     logger.info(f"Sentiment for {symbol}: {sentiment['sentiment_score']}")
-                    # ML signal
+                    # On-chain/social analytics
+                    onchain_score = self.onchain_social_analytics.fetch_onchain_sentiment(symbol)
+                    social_score = self.onchain_social_analytics.fetch_social_sentiment(symbol)
+                    logger.info(f"On-chain score: {onchain_score}, Social score: {social_score}")
                     df = getattr(market_data, 'df', None)
+                    # Multi-timeframe analysis
+                    multi_signal = None
                     if df is not None:
+                        df_dict = {'1h': df}  # Add more timeframes as needed
+                        multi_signal = self.multi_timeframe.get_multi_timeframe_signals(df_dict)
                         ml_signal = generate_ml_signal(df)
                         strategy_signal = strategy_manager.consensus_signal(df)
+                        regime = self.regime_switcher.detect_regime(df)
                     else:
                         ml_signal = 'hold'
                         strategy_signal = 'hold'
-                    logger.info(f"ML signal for {symbol}: {ml_signal}")
-                    logger.info(f"StrategyManager consensus signal: {strategy_signal}")
-                    # Use analysis agent as fallback
+                        regime = 'sideways'
+                    logger.info(f"ML signal: {ml_signal}, Strategy signal: {strategy_signal}, Multi-timeframe: {multi_signal}, Regime: {regime}")
+                    # Alpha stacking
+                    alpha_score = self.alpha_signal_stacker.stack_alpha_signals({
+                        'technical': strategy_signal,
+                        'ml': ml_signal,
+                        'sentiment': sentiment['sentiment_score'],
+                        'onchain': onchain_score,
+                        'social': social_score,
+                        'multi': multi_signal
+                    })
+                    logger.info(f"Alpha score: {alpha_score}")
                     recommendation = await analysis_agent.analyze(market_data)
                     logger.info(f"AnalysisAgent recommendation: {recommendation}")
-                    # If both strategy and ML signal are 'hold', use analysis agent's recommendation
-                    # Defensive: ensure recommendation is a dict and has 'recommendation' key
                     rec_val = ""
                     if isinstance(recommendation, dict):
                         rec_val = recommendation.get("recommendation", "")
-                    # If both strategy and ML signal are 'hold', use analysis agent's recommendation
-                    if (strategy_signal == 'hold' or strategy_signal is None) and (ml_signal == 'hold' or ml_signal is None):
-                        rec_text = str(rec_val).lower() if rec_val is not None else "hold"
-                    else:
-                        rec_text = str(strategy_signal or ml_signal or rec_val or "hold").lower()
+                    # Final decision: combine all signals
+                    rec_text = str(strategy_signal or ml_signal or rec_val or "hold").lower()
+                    if abs(alpha_score) < 1:
+                        rec_text = 'hold'
                     fee = market_data.indicators.get("fee", 0.001)
-                    # Risk management: stop trading if daily loss exceeded
-                    if self.daily_loss <= -self.max_daily_loss:
-                        logger.warning(f"Max daily loss reached: {self.daily_loss}. Trading paused for today.")
-                        send_notification(f"Max daily loss reached: {self.daily_loss}. Trading paused.")
+                    if self.daily_loss <= -self.max_daily_loss or self.risk_controls.check_circuit_breaker(self.daily_loss, 0.2):
+                        logger.warning(f"Max daily loss or circuit breaker triggered: {self.daily_loss}. Trading paused.")
+                        send_notification(f"Max daily loss or circuit breaker triggered: {self.daily_loss}. Trading paused.")
                         continue
                     if "buy" in rec_text or "sell" in rec_text:
                         trades_this_hour += 1
                         unique_coins_traded.add(symbol)
-                    # Dynamic position sizing
                     usdt_balance = binance.get_balance("USDT")
                     price = market_data.price
                     min_qty, step_size = binance.get_lot_size(symbol)
                     min_notional = binance.get_min_notional(symbol)
-                    # Dynamic risk-based position sizing
-                    if self.position_sizing_mode == 'fixed':
-                        position_frac = 1.0
-                    else:
-                        position_frac = self.risk_monitor.adapt_position_size()
-                    qty = (usdt_balance * position_frac) / price if price > 0 else 0
+                    # Adaptive position sizing
+                    volatility = 0.02  # Placeholder, replace with real
+                    max_drawdown = 0.05  # Placeholder, replace with real
+                    win_rate = 0.6  # Placeholder, replace with real
+                    base_frac = weights[i] * 0.7
+                    qty = self.adaptive_position_sizing.calculate_position_size(usdt_balance, volatility, max_drawdown, win_rate, base_frac=base_frac) / price if price > 0 else 0
                     if step_size > 0:
                         qty = qty - (qty % step_size)
                     qty = round(qty, 8)
                     notional = qty * price
                     fmt_qty = binance.format_quantity(qty, step_size)
-                    # Trailing stop/take profit logic (scaffold)
                     trailing_stop = price * (1 - self.trail_perc / 100)
                     take_profit = price * (1 + self.take_profit_perc / 100)
-                    # BUY logic
+                    # Order execution algorithms (TWAP example)
                     if "buy" in rec_text:
                         min_usdt_needed = price * min_qty
                         if usdt_balance < min_usdt_needed:
-                            try:
-                                assets = ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL", "DOGE"]
-                                asset_balances = {a: binance.get_balance(a) for a in assets}
-                                asset_balances = {a: b for a, b in asset_balances.items() if a != "USDT" and b > 0}
-                                if asset_balances:
-                                    largest_asset = max(asset_balances, key=asset_balances.get)
-                                    largest_qty = asset_balances[largest_asset]
-                                    sell_pair = f"{largest_asset}USDT"
-                                    min_sell_qty, sell_step = binance.get_lot_size(sell_pair)
-                                    sell_qty = largest_qty * 0.8
-                                    if sell_step > 0:
-                                        sell_qty = sell_qty - (sell_qty % sell_step)
-                                    sell_qty = round(sell_qty, 6)
-                                    asset_price = binance.get_price(sell_pair)
-                                    if asset_price > 0 and sell_qty >= min_sell_qty:
-                                        try:
-                                            sell_order = binance.create_order(sell_pair, "SELL", sell_qty)
-                                            logger.info(f"Auto-converted {sell_qty} {largest_asset} to USDT: {sell_order}")
-                                            binance.log_trade("CONVERT", sell_pair, sell_qty, asset_price, 0, "SUCCESS", str(sell_order))
-                                            usdt_balance += sell_qty * asset_price
-                                            qty = (usdt_balance * 0.8) / price
-                                            if step_size > 0:
-                                                qty = qty - (qty % step_size)
-                                            qty = round(qty, 6)
-                                        except Exception as ce:
-                                            logger.error(f"Auto-convert failed: {ce}")
-                                            binance.log_trade("CONVERT", sell_pair, sell_qty, asset_price, 0, "FAILED", str(ce))
-                                else:
-                                    logger.warning("No non-USDT assets to convert for buy.")
-                            except Exception as ce:
-                                logger.error(f"Error during auto-convert: {ce}")
+                            continue
                         est_fee = qty * price * fee
                         logger.info(f"Estimated BUY fee for {symbol}: {est_fee} USDT")
                         if qty >= min_qty and notional >= min_notional and est_fee < (qty * price * 0.01):
                             try:
-                                # Smart order routing
-                                route_result = self.smart_router.route_order(symbol, "BUY", float(fmt_qty), price)
-                                logger.info(f"Order routed: {route_result}")
-                                order = binance.create_order(symbol, "BUY", float(fmt_qty))
-                                logger.info(f"BUY order placed: {order}")
-                                binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "SUCCESS", str(order))
-                                trade_pnl = -qty * price - est_fee
-                                self.daily_loss += trade_pnl
-                                self.risk_monitor.update(trade_pnl)
-                                trade_results.append(("SUCCESS", qty))
-                                send_notification(f"BUY {symbol} {qty} at {price}")
+                                twap_orders = self.order_execution.twap_order(symbol, float(fmt_qty), price)
+                                for twap_symbol, twap_qty, twap_price in twap_orders:
+                                    route_result = self.smart_router.route_order(twap_symbol, "BUY", twap_qty, twap_price)
+                                    logger.info(f"Order routed: {route_result}")
+                                    order = binance.create_order(twap_symbol, "BUY", twap_qty)
+                                    logger.info(f"BUY order placed: {order}")
+                                    binance.log_trade("BUY", twap_symbol, twap_qty, twap_price, est_fee, "SUCCESS", str(order), strategy=strategy_signal)
+                                    trade_pnl = -twap_qty * twap_price - est_fee
+                                    self.daily_loss += trade_pnl
+                                    self.risk_monitor.update(trade_pnl)
+                                    trade_results.append(("SUCCESS", twap_qty))
+                                    send_notification(f"BUY {twap_symbol} {twap_qty} at {twap_price}")
                             except Exception as oe:
                                 logger.error(f"BUY order failed: {oe}")
-                                binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe))
+                                binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe), strategy=strategy_signal)
                                 trade_results.append(("FAILED", qty))
                         else:
                             logger.info(f"BUY skipped for {symbol} due to high fee, zero qty, below min lot size, or notional.")
-                            binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional")
+                            binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional", strategy=strategy_signal)
                             trade_results.append(("SKIPPED", qty))
-                    # SELL logic
                     elif "sell" in rec_text:
                         base_asset = symbol.replace("USDT", "")
                         asset_balance = binance.get_balance(base_asset)
@@ -273,7 +283,7 @@ class ManagerAgent:
                             continue
                         min_qty, step_size = binance.get_lot_size(symbol)
                         min_notional = binance.get_min_notional(symbol)
-                        qty = asset_balance * 1.0
+                        qty = asset_balance * weights[i]
                         if step_size > 0:
                             qty = qty - (qty % step_size)
                         qty = round(qty, 8)
@@ -283,27 +293,85 @@ class ManagerAgent:
                         logger.info(f"Estimated SELL fee for {symbol}: {est_fee} USDT")
                         if qty >= min_qty and notional >= min_notional and est_fee < (qty * price * 0.01):
                             try:
-                                # Smart order routing
-                                route_result = self.smart_router.route_order(symbol, "SELL", float(fmt_qty), price)
-                                logger.info(f"Order routed: {route_result}")
-                                order = binance.create_order(symbol, "SELL", float(fmt_qty))
-                                logger.info(f"SELL order placed: {order}")
-                                binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "SUCCESS", str(order))
-                                trade_pnl = qty * price - est_fee
-                                self.daily_loss += trade_pnl
-                                self.risk_monitor.update(trade_pnl)
-                                trade_results.append(("SUCCESS", qty))
-                                send_notification(f"SELL {symbol} {qty} at {price}")
+                                twap_orders = self.order_execution.twap_order(symbol, float(fmt_qty), price)
+                                for twap_symbol, twap_qty, twap_price in twap_orders:
+                                    route_result = self.smart_router.route_order(twap_symbol, "SELL", twap_qty, twap_price)
+                                    logger.info(f"Order routed: {route_result}")
+                                    order = binance.create_order(twap_symbol, "SELL", twap_qty)
+                                    logger.info(f"SELL order placed: {order}")
+                                    binance.log_trade("SELL", twap_symbol, twap_qty, twap_price, est_fee, "SUCCESS", str(order), strategy=strategy_signal)
+                                    trade_pnl = twap_qty * twap_price - est_fee
+                                    self.daily_loss += trade_pnl
+                                    self.risk_monitor.update(trade_pnl)
+                                    trade_results.append(("SUCCESS", twap_qty))
+                                    send_notification(f"SELL {twap_symbol} {twap_qty} at {twap_price}")
                             except Exception as oe:
                                 logger.error(f"SELL order failed: {oe}")
-                                binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe))
+                                binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe), strategy=strategy_signal)
                                 trade_results.append(("FAILED", qty))
                         else:
                             logger.info(f"SELL skipped for {symbol} due to high fee, zero qty, below min lot size, or notional.")
-                            binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional")
+                            binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional", strategy=strategy_signal)
                             trade_results.append(("SKIPPED", qty))
+                    # Performance monitoring & auto-shutdown
+                    try:
+                        strat_name = 'strategy_manager'  # Replace with actual
+                        win_rate = 0.6  # Placeholder
+                        pnl = 100  # Placeholder
+                        if self.performance_monitor.should_disable_strategy(win_rate, pnl):
+                            logger.warning(f"Strategy {strat_name} disabled due to poor performance.")
+                            send_notification(f"Strategy {strat_name} disabled due to poor performance.")
+                            continue
+                    except Exception as e:
+                        logger.error(f"Performance monitor error: {e}")
                 except Exception as e:
                     logger.error(f"Error in Research/AnalysisAgent for {symbol}: {e}")
+
+            # 30% allocation: microcap strategy (unchanged, can be enhanced similarly)
+            try:
+                all_tickers = binance.client.get_ticker()
+                microcaps = sorted([t for t in all_tickers if t['symbol'].endswith('USDT') and t['symbol'] not in self.symbols], key=lambda x: float(x.get('quoteVolume', 0)))[:10]
+                for micro in microcaps:
+                    micro_symbol = micro['symbol']
+                    research_agent = ResearchAgent(micro_symbol)
+                    self.register_agent(f"microcap_{micro_symbol}", research_agent)
+                    market_data = await research_agent.fetch_market_data()
+                    logger.info(f"[MICROCAP] Fetched market data: {market_data}")
+                    price = market_data.price
+                    volume = market_data.volume
+                    min_qty, step_size = binance.get_lot_size(micro_symbol)
+                    min_notional = binance.get_min_notional(micro_symbol)
+                    usdt_balance = binance.get_balance("USDT")
+                    qty = (usdt_balance * 0.3) / price if price > 0 else 0
+                    if step_size > 0:
+                        qty = qty - (qty % step_size)
+                    qty = round(qty, 8)
+                    notional = qty * price
+                    fmt_qty = binance.format_quantity(qty, step_size)
+                    if float(micro.get('priceChangePercent', 0)) > 5 or float(micro.get('quoteVolume', 0)) > 2 * float(micro.get('volume', 0)):
+                        est_fee = qty * price * 0.001
+                        logger.info(f"[MICROCAP] Considering BUY {micro_symbol}: qty={qty}, price={price}, notional={notional}, fee={est_fee}")
+                        if qty >= min_qty and notional >= min_notional and est_fee < (qty * price * 0.01):
+                            try:
+                                twap_orders = self.order_execution.twap_order(micro_symbol, float(fmt_qty), price)
+                                for twap_symbol, twap_qty, twap_price in twap_orders:
+                                    route_result = self.smart_router.route_order(twap_symbol, "BUY", twap_qty, twap_price)
+                                    logger.info(f"[MICROCAP] Order routed: {route_result}")
+                                    order = binance.create_order(twap_symbol, "BUY", twap_qty)
+                                    logger.info(f"[MICROCAP] BUY order placed: {order}")
+                                    binance.log_trade("BUY", twap_symbol, twap_qty, twap_price, est_fee, "SUCCESS", str(order), strategy="microcap")
+                                    trade_results.append(("SUCCESS", twap_qty))
+                                    send_notification(f"[MICROCAP] BUY {twap_symbol} {twap_qty} at {twap_price}")
+                            except Exception as oe:
+                                logger.error(f"[MICROCAP] BUY order failed: {oe}")
+                                binance.log_trade("BUY", micro_symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe), strategy="microcap")
+                                trade_results.append(("FAILED", qty))
+                        else:
+                            logger.info(f"[MICROCAP] BUY skipped for {micro_symbol} due to high fee, zero qty, below min lot size, or notional.")
+                            binance.log_trade("BUY", micro_symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional", strategy="microcap")
+                            trade_results.append(("SKIPPED", qty))
+            except Exception as e:
+                logger.error(f"Error in Microcap strategy: {e}")
             await asyncio.sleep(30)
             # Health checks, circuit breakers, dashboard hooks, etc.
             # (Dashboard runs as separate Flask process)

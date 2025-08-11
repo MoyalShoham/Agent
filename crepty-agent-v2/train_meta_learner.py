@@ -18,10 +18,7 @@ def prepare_training_data(df, strategy_list):
         # Build features for each row
         perf = {s: {'pnl': 0, 'trades': 0, 'win': 0, 'history': []} for s in strategy_list}
         # Optionally, fill perf with rolling stats up to this row
-        features = build_meta_features(None, perf, row.get('regime', 'sideways'),
-                                       volatility=row.get('volatility', 0),
-                                       recent_pnl=row.get('pnl', 0),
-                                       win_rate=row.get('win', 0))
+        features = build_meta_features(None, perf, row.get('regime', 'sideways'))
         X.append(features)
         # y: index of strategy used
         strat_idx = strategy_list.index(row['strategy']) if row['strategy'] in strategy_list else 0
@@ -29,7 +26,8 @@ def prepare_training_data(df, strategy_list):
     return X, y
 
 def main():
-    csv_path = 'trade_log.csv'
+    # Use the cleaned trade log for ML/analytics
+    csv_path = 'trade_log_clean_fixed_with_strategy.csv'
     model_path = os.path.join('trading_bot', 'utils', 'meta_learner_model.pkl')
     df = load_trade_log(csv_path)
     strategy_list = sorted(df['strategy'].unique())

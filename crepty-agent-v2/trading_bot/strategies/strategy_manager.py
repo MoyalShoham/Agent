@@ -120,9 +120,42 @@ class StrategyManager:
             win_rate = perf['win'] / perf['trades'] if perf['trades'] else 0
             perf_weights[strat_name] = max(0.1, win_rate)
         regime_weights = {
-            'bull': {'bollinger_strategy': 0.2, 'macd_strategy': 0.4, 'rsi_strategy': 0.4, 'momentum_strategy': 0.5, 'ma_crossover_strategy': 0.5},
-            'bear': {'bollinger_strategy': 0.4, 'macd_strategy': 0.4, 'rsi_strategy': 0.2, 'mean_reversion_strategy': 0.5, 'volatility_expansion_strategy': 0.5},
-            'sideways': {'bollinger_strategy': 0.5, 'macd_strategy': 0.2, 'rsi_strategy': 0.3, 'mean_reversion_strategy': 0.7, 'breakout_strategy': 0.3},
+            'bull': {
+                'bollinger_strategy': 0.2,
+                'macd_strategy': 0.4,
+                'rsi_strategy': 0.4,
+                'momentum_strategy': 0.5,
+                'ma_crossover_strategy': 0.5,
+                'supertrend_strategy': 0.7,
+                'donchian_strategy': 0.5,
+                'ichimoku_strategy': 0.6,
+                'stochastic_strategy': 0.3,
+                'atr_trailing_stop_strategy': 0.5
+            },
+            'bear': {
+                'bollinger_strategy': 0.4,
+                'macd_strategy': 0.4,
+                'rsi_strategy': 0.2,
+                'mean_reversion_strategy': 0.5,
+                'volatility_expansion_strategy': 0.5,
+                'supertrend_strategy': 0.6,
+                'donchian_strategy': 0.5,
+                'ichimoku_strategy': 0.5,
+                'stochastic_strategy': 0.4,
+                'atr_trailing_stop_strategy': 0.6
+            },
+            'sideways': {
+                'bollinger_strategy': 0.5,
+                'macd_strategy': 0.2,
+                'rsi_strategy': 0.3,
+                'mean_reversion_strategy': 0.7,
+                'breakout_strategy': 0.3,
+                'supertrend_strategy': 0.3,
+                'donchian_strategy': 0.6,
+                'ichimoku_strategy': 0.4,
+                'stochastic_strategy': 0.7,
+                'atr_trailing_stop_strategy': 0.4
+            },
         }
         weights = regime_weights.get(regime, {})
         score = {'buy': 0, 'sell': 0, 'hold': 0}
