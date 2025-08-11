@@ -1,0 +1,17 @@
+
+# Position Size Optimization Settings
+# Apply these settings to your risk manager or position manager
+
+POSITION_SIZE_REDUCTION = 0.3  # Reduce to 30% of current size
+MAX_CONCURRENT_POSITIONS = 5   # Limit to 5 positions max
+MARGIN_BUFFER = 0.3           # Keep 30% margin as buffer
+POSITION_ROTATION_ENABLED = True  # Close weak positions for strong signals
+
+# ATR-based sizing adjustments
+ATR_MULTIPLIER = 0.5          # Reduce from current ATR multiplier
+MAX_POSITION_USDT = 50        # Max position size in USDT value
+MIN_POSITION_USDT = 10        # Min position size in USDT value
+
+# Risk management
+STOP_TRADING_AT_MARGIN_PCT = 80  # Stop when 80% margin used
+FORCE_CLOSE_WEAKEST = True       # Auto-close worst performing positions

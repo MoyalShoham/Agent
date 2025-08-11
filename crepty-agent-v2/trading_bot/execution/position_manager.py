@@ -48,8 +48,12 @@ class Position:
 class PositionManager:
     def __init__(self, symbols, max_leverage: float = 1.5, risk_per_trade: float = 0.0005):
         self.positions: Dict[str, Position] = {s: Position(symbol=s) for s in symbols}
-        self.max_leverage = max_leverage
-        self.risk_per_trade = risk_per_trade
+        # 🔧 OPTIMIZED SETTINGS - Reduced from defaults to prevent margin issues
+        self.max_leverage = max_leverage * 0.5  # Reduce leverage by 50%
+        self.risk_per_trade = risk_per_trade * 0.3  # Reduce risk per trade to 30% of original
+        self.max_concurrent_positions = 5  # Limit to 5 positions maximum
+        self.margin_buffer = 0.3  # Keep 30% margin as buffer
+        self.position_size_multiplier = 0.3  # Reduce all position sizes to 30%
         self.equity = 0.0
         self.last_equity_update = 0.0
 
@@ -64,11 +68,25 @@ class PositionManager:
         # Position sizing: risk_per_trade * equity / (atr or price*0.01)
         if self.equity <= 0:
             return 0.0
+        
+        # 🔧 CHECK: Limit concurrent positions to prevent margin issues
+        active_positions = sum(1 for pos in self.positions.values() if abs(pos.size) > 0.001)
+        if active_positions >= self.max_concurrent_positions:
+            return 0.0  # Don't open new positions if at limit
+        
         dollar_risk = self.equity * self.risk_per_trade
         unit_risk = atr if (atr and atr > 0) else price * 0.01
         if unit_risk <= 0:
             return 0.0
         qty = dollar_risk / unit_risk
+        
+        # 🔧 APPLY POSITION SIZE REDUCTION MULTIPLIER
+        qty *= self.position_size_multiplier
+        
         # Leverage cap (notional <= equity * max_leverage)
         max_qty = (self.equity * self.max_leverage) / price if price > 0 else 0.0
+        
+        # 🔧 APPLY MARGIN BUFFER - Use only 70% of available margin
+        max_qty *= (1.0 - self.margin_buffer)
+        
         return min(qty, max_qty)
