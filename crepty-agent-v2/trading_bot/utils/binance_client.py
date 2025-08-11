@@ -178,6 +178,10 @@ class BinanceClient:
             current_total_usdt = round(self.get_total_usdt_value(), 4)
         except Exception:
             current_total_usdt = ''
+        def fmt(val):
+            if isinstance(val, float):
+                return f"{val:.5e}"
+            return val
         with open(log_file, 'a', newline='') as csvfile:
             writer = csv.writer(csvfile)
             if not file_exists:
@@ -186,13 +190,13 @@ class BinanceClient:
                 datetime.datetime.utcnow().isoformat(),
                 action,
                 symbol,
-                qty,
-                price,
-                fee,
+                fmt(qty),
+                fmt(price),
+                fmt(fee),
                 status,
                 details,
                 actual_strategy,
-                current_total_usdt
+                fmt(current_total_usdt)
             ])
         # Also log to the strategy-specific log file for ML/analytics
         strat_log_file = os.path.join(os.path.dirname(__file__), '../../trade_log_clean_fixed_with_strategy.csv')
@@ -233,6 +237,27 @@ class BinanceClient:
             raise RuntimeError(f"Binance balance fetch error: {e}")
 
     def create_order(self, symbol: str, side: str, quantity: float, order_type: str = "MARKET"):
+        # Adjust quantity to valid LOT_SIZE and MIN_NOTIONAL before placing order
+        min_qty, step_size = self.get_lot_size(symbol)
+        min_notional = self.get_min_notional(symbol)
+        import math, logging
+        price = self.get_price(symbol)
+        # Calculate minimum qty for both minQty and minNotional
+        precision = int(round(-math.log10(step_size))) if step_size < 1 else 0
+        min_qty_for_notional = math.ceil(min_notional / price / step_size) * step_size
+        min_qty_for_notional = round(min_qty_for_notional, precision)
+        # Use the greater of min_qty and min_qty_for_notional
+        required_qty = max(min_qty, min_qty_for_notional)
+        # If requested quantity is too low, bump to required_qty
+        adj_qty = max(quantity, required_qty)
+        # Round down to step size
+        adj_qty = math.floor(adj_qty / step_size) * step_size
+        adj_qty = round(adj_qty, precision)
+        notional = adj_qty * price
+        # Final checks
+        if adj_qty < min_qty or notional < min_notional or adj_qty == 0:
+            logging.warning(f"[Order] {symbol}: qty {adj_qty} < min_qty {min_qty} or notional {notional} < min_notional {min_notional}. Skipping order.")
+            raise RuntimeError(f"Order does not meet Binance minQty/minNotional for {symbol}: qty={adj_qty}, notional={notional}")
         if self.paper_trading:
             # Simulate order
             import random, datetime
@@ -242,22 +267,25 @@ class BinanceClient:
                 'side': side.upper(),
                 'type': order_type,
                 'status': 'FILLED',
-                'price': str(self.get_price(symbol)),
-                'origQty': str(quantity),
-                'executedQty': str(quantity),
+                'price': str(price),
+                'origQty': str(adj_qty),
+                'executedQty': str(adj_qty),
                 'transactTime': int(datetime.datetime.utcnow().timestamp() * 1000),
                 'paper': True
             }
+            logging.info(f"[Paper Order] {symbol}: qty={adj_qty}, price={price}, notional={notional}")
             return fake_order
         try:
             order = self.client.create_order(
                 symbol=symbol,
                 side=side.upper(),
                 type=order_type,
-                quantity=quantity
+                quantity=adj_qty
             )
+            logging.info(f"[Real Order] {symbol}: qty={adj_qty}, price={price}, notional={notional}")
             return order
         except Exception as e:
+            logging.error(f"[Order Error] {symbol}: {e}")
             raise RuntimeError(f"Binance order error: {e}")
     # (Removed duplicate __init__)
 
