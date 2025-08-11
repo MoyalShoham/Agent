@@ -28,12 +28,7 @@ trading_bot/
   tests/
 main.py
 requirements.txt
-.env.example
-auto_optimizer.py
-download_binance_ohlcv.py
-backtest_optimize.py
-trade_log.csv
-BTCUSDT_1h.csv
+.env
 ```
 ## Advanced Features
 
@@ -43,13 +38,10 @@ BTCUSDT_1h.csv
 
 
 ## Setup
-1. Copy `.env.example` to `.env` and fill in your API keys.
+1. Create `.env` and fill in your API keys.
 2. Install dependencies: `pip install -r requirements.txt`
 3. Run: `python main.py`
 
 ## Security
 - Never commit real API keys.
 - Use `.env` for secrets.
-
-## License
-MIT
