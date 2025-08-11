@@ -155,7 +155,11 @@ class StrategyManager:
             if self.meta_learner.model is not None and features.size > 0:
                 flat_input = features.flatten().reshape(1, -1)
                 if self.meta_feature_dim and flat_input.shape[1] != self.meta_feature_dim:
-                    raise ValueError(f"Feature length mismatch trained={self.meta_feature_dim} live={flat_input.shape[1]}")
+                    logger.warning(f"[META] Feature length mismatch trained={self.meta_feature_dim} live={flat_input.shape[1]} -> resetting meta model and falling back")
+                    # Reset model so fallback path is used; update expected dim for future retrains
+                    self.meta_learner.model = None
+                    self.meta_feature_dim = flat_input.shape[1]
+                    raise RuntimeError("meta_reset")
                 best_idx = int(self.meta_learner.predict(flat_input)[0])
                 perf_keys = list(self.performance.keys())
                 if best_idx < len(perf_keys):
@@ -169,7 +173,8 @@ class StrategyManager:
                                 return self._fallback_weighted(signals, regime, buy_count, sell_count)
                             return sig
         except Exception as e:
-            logger.error(f"Meta learner prediction failed: {e}; fallback.")
+            if str(e) != 'meta_reset':
+                logger.error(f"Meta learner prediction failed: {e}; fallback.")
         return self._fallback_weighted(signals, regime, buy_count, sell_count)
 
     def _fallback_weighted(self, signals, regime, buy_count, sell_count):

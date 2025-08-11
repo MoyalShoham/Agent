@@ -27,19 +27,22 @@ def supertrend(df: pd.DataFrame, period: int = 10, multiplier: float = 3.0):
     atr_val = atr(df, period)
     upperband = hl2 + multiplier * atr_val
     lowerband = hl2 - multiplier * atr_val
-    supertrend = pd.Series(index=df.index, dtype=float)
-    direction = True  # True=long
+    supertrend = pd.Series(np.nan, index=df.index)
+    direction = np.ones(len(df), dtype=bool)  # True=long, False=short
+    # Vectorized logic: propagate direction and bands
     for i in range(period + 1, len(df)):
-        prev = i-1
+        prev = i - 1
         if df['close'].iloc[i] > upperband.iloc[prev]:
-            direction = True
+            direction[i] = True
         elif df['close'].iloc[i] < lowerband.iloc[prev]:
-            direction = False
-        if direction:
+            direction[i] = False
+        else:
+            direction[i] = direction[prev]
+        if direction[i]:
             upperband.iloc[i] = min(upperband.iloc[i], upperband.iloc[prev])
         else:
             lowerband.iloc[i] = max(lowerband.iloc[i], lowerband.iloc[prev])
-        supertrend.iloc[i] = lowerband.iloc[i] if direction else upperband.iloc[i]
+        supertrend.iloc[i] = lowerband.iloc[i] if direction[i] else upperband.iloc[i]
     return supertrend
 
 def keltner_channels(df: pd.DataFrame, ema_period: int = 20, atr_period: int = 10, atr_mult: float = 1.5):

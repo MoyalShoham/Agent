@@ -11,7 +11,7 @@ NAME = 'volatility_compression_breakout_strategy'
 
 def generate_signal(df: pd.DataFrame, lookback: int = 40, squeeze_window: int = 20, pct_threshold: float = 0.25):
     try:
-        if len(df) < max(lookback, squeeze_window) + 5:
+        if len(df) < max(lookback, squeeze_window, 25) + 5:
             return 'hold'
         closes = df['close']
         highs = df['high']
@@ -25,7 +25,12 @@ def generate_signal(df: pd.DataFrame, lookback: int = 40, squeeze_window: int = 
         don_l = lows.rolling(squeeze_window).min()
         don_width = (don_h - don_l) / (closes + 1e-9)
         current_width = don_width.iloc[-1]
-        perc = (bw <= bw.quantile(pct_threshold)).iloc[-1] if bw.notna().sum() else False
+        # Only compute quantile if enough non-NaN values
+        if bw.notna().sum() < 10:
+            perc = False
+        else:
+            qval = bw.quantile(pct_threshold)
+            perc = (bw.iloc[-1] <= qval)
         if perc and current_width == current_width:  # not NaN
             breakout_high = highs.iloc[-2] < don_h.iloc[-2] and closes.iloc[-1] > don_h.iloc[-2]
             breakdown_low = lows.iloc[-2] > don_l.iloc[-2] and closes.iloc[-1] < don_l.iloc[-2]

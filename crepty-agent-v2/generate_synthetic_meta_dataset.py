@@ -56,13 +56,26 @@ def load_price_series():
 def main():
     price_df = load_price_series()
     sm = StrategyManager()
-    strategy_modules = sm.strategy_modules
-    strategy_names = [m.__name__.split('.')[-1] for m in strategy_modules]
+    # Skip ADX strategy for now
+    strategy_modules = []
+    strategy_names = []
+    for m in sm.strategy_modules:
+        name = m.__name__.split('.')[-1]
+        if 'adx' not in name.lower():
+            strategy_modules.append(m)
+            strategy_names.append(name)
     # Initialize performance tracking structure
     performance = {name: {'pnl':0.0,'trades':0,'win':0,'history':[]} for name in strategy_names}
     rows = []
     for idx in range(MIN_HISTORY, len(price_df) - LOOKAHEAD):
         window_df = price_df.iloc[:idx].copy()
+        # Ensure 'high' and 'low' columns exist in window_df (for strategies that require them)
+        if 'high' not in window_df.columns or 'low' not in window_df.columns:
+            close = window_df['close']
+            rng = np.random.default_rng(42 + idx)  # different seed per window for variety
+            noise = rng.normal(0, 0.001, size=len(close))
+            window_df['high'] = close * (1 + np.abs(noise))
+            window_df['low'] = close * (1 - np.abs(noise))
         # For each strategy get signal
         signal_results = {}
         for mod, name in zip(strategy_modules, strategy_names):
@@ -93,6 +106,9 @@ def main():
             if len(perf['history']) > 200:
                 perf['history'].pop(0)
         # Build features (regime placeholder 'sideways')
+        required_cols = {'close', 'high', 'low'}
+        if not required_cols.issubset(window_df.columns):
+            continue  # skip this window if columns are missing
         feature_matrix = build_meta_features(window_df[['close','high','low']].copy(), performance, regime='sideways')
         flat = feature_matrix.flatten()
         row = {

@@ -39,6 +39,9 @@ class ManagerAgent:
         # Placeholder risk monitor values
         self.max_daily_loss = getattr(_settings, 'MAX_DAILY_LOSS', 0) if ' _settings' in locals() else 0
         self.current_loss = 0.0
+        # --- Risk Management Layer ---
+        from trading_bot.risk.risk_manager import RiskManager
+        self.risk_manager = RiskManager(max_drawdown=0.10, window=50, min_position=0.2, default_position=1.0)
 
     def register_agent(self, name: str, agent):
         """Register an agent object by name."""
@@ -103,11 +106,17 @@ class ManagerAgent:
                     ev.get('target_qty'),
                     ev.get('prev_pos'),
                     ev.get('new_pos'),
-                    ev.get('side'),
+                    ev.get('side',''),
                     ev.get('order_id', ''),
                     ev.get('realized_pnl',''),
                     ev.get('simulated', False)
                 ])
+                # Update risk manager with realized PnL
+                try:
+                    pnl = float(ev.get('realized_pnl', 0) or 0)
+                    self.risk_manager.update(pnl)
+                except Exception as rme:
+                    logger.error(f"RiskManager update error: {rme}")
             except Exception as e:
                 logger.error(f"on_order_filled log error: {e}")
         subscribe('ORDER_FILLED', on_order_filled)
@@ -358,7 +367,18 @@ class ManagerAgent:
                         signal = strategy_manager.consensus_signal(strat_df)
                         from trading_bot.utils import order_execution as oe
                         pos_before = oe._position_manager.get_position(sym).size if oe._position_manager else 0.0
-                        oe.submit_signal(sym, signal, price, atr=atr)
+                        # --- Risk Management: check if trade is allowed and adjust position size ---
+                        if not self.risk_manager.allow_trade():
+                            logger.warning(f"[RISK] Trade blocked for {sym} due to excessive drawdown.")
+                            continue
+                        position_scale = self.risk_manager.get_position_size()
+                        # Pass position_scale to submit_signal if supported, else scale target_qty/size in your signal logic
+                        oe.submit_signal(sym, signal, price, atr=atr, position_scale=position_scale)
+                        # NEW: invoke risk management (trailing stop / partial TP)
+                        try:
+                            oe.manage_positions(sym, price, atr=atr)
+                        except Exception as rm_err:
+                            logger.error(f"[RISK_MANAGE] {sym} manage_positions error: {rm_err}")
                     except Exception as es:
                         logger.error(f"[FUTURES_EXEC] {sym} error: {es}")
                 # Snapshot code remains below

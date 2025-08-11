@@ -13,7 +13,11 @@ import logging
 
 
 def _compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
-    d = df[['high','low','close']].copy()
+    # Only operate on the minimal required tail for speed
+    required_cols = {'high', 'low', 'close'}
+    if not required_cols.issubset(df.columns):
+        return pd.DataFrame()  # return empty if missing columns
+    d = df[['high','low','close']].tail(period*5).copy()
     d['prev_high'] = d['high'].shift(1)
     d['prev_low'] = d['low'].shift(1)
     d['+DM'] = np.where((d['high'] - d['prev_high']) > (d['prev_low'] - d['low']),
@@ -43,10 +47,12 @@ def _compute_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 
 
 def generate_signal(df: pd.DataFrame, period: int = 14, adx_threshold: float = 20.0) -> str:
-    if df is None or len(df) < period + 2:
+    required_cols = {'high', 'low', 'close'}
+    if df is None or len(df) < period * 5 or not required_cols.issubset(df.columns):
         return 'hold'
     try:
-        adx_df = _compute_adx(df.tail(5*period))  # limit calc size
+        # Only pass the minimal required tail for speed
+        adx_df = _compute_adx(df.tail(period*5))
         last = adx_df.iloc[-1]
         prev = adx_df.iloc[-2]
         adx = last['ADX']

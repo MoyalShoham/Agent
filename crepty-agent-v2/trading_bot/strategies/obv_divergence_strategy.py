@@ -27,12 +27,16 @@ def generate_signal(df: pd.DataFrame, window: int = 40, pivot_lookback: int = 10
     price = d['close']
     # Simple pivot highs/lows (last two)
     def pivots(series):
+        # Efficient pivot detection using rolling window
+        if len(series) < 2 * pivot_lookback + 1:
+            return []
         piv = []
+        roll_max = series.rolling(window=2*pivot_lookback+1, center=True).max()
+        roll_min = series.rolling(window=2*pivot_lookback+1, center=True).min()
         for i in range(pivot_lookback, len(series) - pivot_lookback):
-            seg = series.iloc[i-pivot_lookback:i+pivot_lookback+1]
-            if series.iloc[i] == seg.max():
+            if series.iloc[i] == roll_max.iloc[i]:
                 piv.append((i, series.iloc[i]))
-            if series.iloc[i] == seg.min():
+            if series.iloc[i] == roll_min.iloc[i]:
                 piv.append((i, series.iloc[i]))
         return piv
     price_piv = pivots(price)
