@@ -9,7 +9,7 @@ class OpenAIClient:
         self.api_key = api_key or os.getenv('OPENAI_API_KEY')
         openai.api_key = self.api_key
 
-    def ask(self, prompt: str, model: str = 'gpt-3.5-turbo', **kwargs):
+    def ask(self, prompt: str, model: str = 'gpt-4o-mini', **kwargs):
         # Default model is 'gpt-4o' (fast, cheap, and powerful as of 2025). If you get an access error, try 'gpt-3.5-turbo' or check your OpenAI account access.
         try:
             response = openai.ChatCompletion.create(

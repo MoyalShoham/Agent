@@ -50,6 +50,16 @@ class ResearchAgent:
             logger.error(f"Error fetching market data: {e}")
             raise
 
+
+    async def research(self, market_data: MarketData) -> int:
+        """
+        Placeholder research method. Returns 1 (buy), 0 (hold), or -1 (sell).
+        Extend with real research logic as needed.
+        """
+        logger.info(f"[RESEARCH] ResearchAgent analyzing market data for {market_data.symbol}")
+        # Example: always return 1 (buy)
+        return 1
+
     async def receive_message(self, message):
         # Example: log the received message
         from loguru import logger
