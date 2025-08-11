@@ -1,3 +1,24 @@
+import time
+import functools
+import logging
+
+# Retry decorator with exponential backoff
+def retry_on_exception(max_retries=3, initial_delay=1, backoff=2, exceptions=(Exception,)):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    logging.warning(f"[RETRY] {func.__name__} failed (attempt {attempt+1}/{max_retries}): {e}")
+                    if attempt == max_retries - 1:
+                        raise
+                    time.sleep(delay)
+                    delay *= backoff
+        return wrapper
+    return decorator
 import os
 from binance.client import Client
 from dotenv import load_dotenv
@@ -5,6 +26,126 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class BinanceClient:
+    def place_spot_order(self, symbol, side, quantity, price=None, order_type="MARKET", time_in_force="GTC"):
+        """
+        Place a spot order on Binance.
+        side: "BUY" or "SELL"
+        order_type: "MARKET" or "LIMIT"
+        price: required for LIMIT orders
+        """
+        from binance.exceptions import BinanceAPIException
+        try:
+            if order_type == "MARKET":
+                order = self.client.create_order(
+                    symbol=symbol,
+                    side=side,
+                    type="MARKET",
+                    quantity=quantity
+                )
+            elif order_type == "LIMIT":
+                if price is None:
+                    raise ValueError("Price must be specified for LIMIT orders.")
+                order = self.client.create_order(
+                    symbol=symbol,
+                    side=side,
+                    type="LIMIT",
+                    timeInForce=time_in_force,
+                    quantity=quantity,
+                    price=str(price)
+                )
+            else:
+                raise ValueError(f"Unsupported order type: {order_type}")
+            return order
+        except BinanceAPIException as e:
+            logging.error(f"Binance API error placing order: {e}")
+            raise
+        except Exception as e:
+            logging.error(f"Error placing spot order: {e}")
+            raise
+    def backtest_portfolio_allocation(self, asset_allocation, interval='1h', start_balance=10000, window=14, limit=200, rebalance_freq=24, filename='portfolio_backtest_results.csv', fee_rate=0.001, slippage=0.0005):
+        """
+        Simulate portfolio allocation and rebalancing over historical data with realistic trading fees and slippage.
+        asset_allocation: dict of {symbol: percent} (e.g., {'BTCUSDT': 0.2, 'ETHUSDT': 0.3, ...})
+        interval: price interval (e.g., '1h')
+        start_balance: initial USDT balance
+        window: window for indicators (unused, for future)
+        limit: number of historical points
+        rebalance_freq: rebalance every N intervals
+        filename: CSV to export results
+        fee_rate: trading fee rate (e.g., 0.001 for 0.1%)
+        slippage: simulated slippage as a fraction (e.g., 0.0005 for 0.05%)
+        """
+        import csv, datetime
+        # Fetch historical klines for all assets (to get timestamps)
+        kline_history = {}
+        for symbol in asset_allocation:
+            klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+            kline_history[symbol] = klines
+        # Use the shortest available history
+        min_len = min(len(klines) for klines in kline_history.values())
+        for symbol in kline_history:
+            kline_history[symbol] = kline_history[symbol][-min_len:]
+        # Extract close prices and timestamps
+        price_history = {symbol: [float(k[4]) for k in kline_history[symbol]] for symbol in kline_history}
+        timestamps = [int(kline_history[next(iter(kline_history))][i][0]) for i in range(min_len)]
+        # Initialize portfolio
+        portfolio = {symbol: 0.0 for symbol in asset_allocation}
+        usdt_balance = start_balance
+        history = []
+        for i in range(min_len):
+            # Rebalance at specified frequency
+            if i % rebalance_freq == 0:
+                total_value = usdt_balance + sum(portfolio[s] * price_history[s][i] for s in portfolio)
+                for symbol, pct in asset_allocation.items():
+                    target_value = total_value * pct
+                    current_value = portfolio[symbol] * price_history[symbol][i]
+                    diff = target_value - current_value
+                    if abs(diff) > 1e-6:
+                        qty = diff / price_history[symbol][i]
+                        # Simulate trade with slippage and fee
+                        trade_price = price_history[symbol][i] * (1 + slippage if diff > 0 else 1 - slippage)
+                        trade_value = abs(qty) * trade_price
+                        fee = trade_value * fee_rate
+                        if diff > 0 and usdt_balance >= (trade_value + fee):
+                            portfolio[symbol] += qty
+                            usdt_balance -= (trade_value + fee)
+                            action = 'BUY'
+                        elif diff < 0 and portfolio[symbol] >= abs(qty):
+                            portfolio[symbol] -= abs(qty)
+                            usdt_balance += (trade_value - fee)
+                            action = 'SELL'
+                        else:
+                            action = 'SKIP'
+                        # Log simulated trade
+                        if action in ['BUY', 'SELL']:
+                            history.append({
+                                'timestamp': datetime.datetime.utcfromtimestamp(timestamps[i]/1000).isoformat(),
+                                'action': action,
+                                'symbol': symbol,
+                                'qty': round(qty, 8),
+                                'price': round(trade_price, 8),
+                                'fee': round(fee, 8),
+                                'usdt_balance': round(usdt_balance, 2),
+                                'portfolio_value': round(sum(portfolio[s] * price_history[s][i] for s in portfolio) + usdt_balance, 2)
+                            })
+            # Log portfolio value at each step
+            history.append({
+                'timestamp': datetime.datetime.utcfromtimestamp(timestamps[i]/1000).isoformat(),
+                'action': 'HOLD',
+                'symbol': '',
+                'qty': '',
+                'price': '',
+                'fee': '',
+                'usdt_balance': round(usdt_balance, 2),
+                'portfolio_value': round(sum(portfolio[s] * price_history[s][i] for s in portfolio) + usdt_balance, 2)
+            })
+        # Export to CSV
+        with open(filename, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=['timestamp', 'action', 'symbol', 'qty', 'price', 'fee', 'usdt_balance', 'portfolio_value'])
+            writer.writeheader()
+            for row in history:
+                writer.writerow(row)
+        return filename
     def get_total_usdt_value(self):
         """Estimate total portfolio value in USDT (sum of all assets converted to USDT)."""
         portfolio = self.get_portfolio()
@@ -104,6 +245,7 @@ class BinanceClient:
                 signals.append(('SELL', i, prices[i]))
         return signals
 
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_portfolio(self):
         try:
             balances = self.client.get_account()['balances']
@@ -111,6 +253,7 @@ class BinanceClient:
             return portfolio
         except Exception as e:
             raise RuntimeError(f"Binance portfolio fetch error: {e}")
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_historical_prices(self, symbol: str, interval: str = '1h', limit: int = 50):
         try:
             klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
@@ -131,12 +274,16 @@ class BinanceClient:
             return (entry_price - exit_price) * qty - fee
         return 0
     def __init__(self, api_key=None, api_secret=None, paper_trading=None):
-        self.api_key = api_key or os.getenv('BINANCE_API_KEY')
-        self.api_secret = api_secret or os.getenv('BINANCE_API_SECRET')
+        self.api_key = api_key if api_key is not None else os.getenv('BINANCE_API_KEY')
+        self.api_secret = api_secret if api_secret is not None else os.getenv('BINANCE_API_SECRET')
+        if not self.api_key or not self.api_secret:
+            raise RuntimeError("Binance API credentials not found in environment variables. Set BINANCE_API_KEY and BINANCE_API_SECRET.")
+        logging.info("Binance API credentials loaded securely from environment variables.")
         self.client = Client(self.api_key, self.api_secret)
         from trading_bot.config.settings import settings
         self.paper_trading = paper_trading if paper_trading is not None else getattr(settings, 'PAPER_TRADING', True)
 
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_min_notional(self, symbol: str):
         try:
             info = self.client.get_symbol_info(symbol)
@@ -154,6 +301,7 @@ class BinanceClient:
         precision = abs(step.as_tuple().exponent)
         fmt_qty = f"{qty:.{precision}f}"
         return fmt_qty
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_lot_size(self, symbol: str):
         try:
             info = self.client.get_symbol_info(symbol)
@@ -217,6 +365,7 @@ class BinanceClient:
                 details,
                 actual_strategy
             ])
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_trade_fee(self, symbol: str) -> float:
         try:
             fees = self.client.get_trade_fee(symbol=symbol)
@@ -224,11 +373,13 @@ class BinanceClient:
         except Exception as e:
             raise RuntimeError(f"Binance fee fetch error: {e}")
 
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_ticker(self, symbol: str):
         try:
             return self.client.get_ticker(symbol=symbol)
         except Exception as e:
             raise RuntimeError(f"Binance ticker error: {e}")
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_balance(self, asset: str = "USDT") -> float:
         try:
             balance_info = self.client.get_asset_balance(asset=asset)
@@ -236,6 +387,7 @@ class BinanceClient:
         except Exception as e:
             raise RuntimeError(f"Binance balance fetch error: {e}")
 
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def create_order(self, symbol: str, side: str, quantity: float, order_type: str = "MARKET"):
         # Adjust quantity to valid LOT_SIZE and MIN_NOTIONAL before placing order
         min_qty, step_size = self.get_lot_size(symbol)
@@ -289,6 +441,7 @@ class BinanceClient:
             raise RuntimeError(f"Binance order error: {e}")
     # (Removed duplicate __init__)
 
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_price(self, symbol: str):
         try:
             ticker = self.client.get_symbol_ticker(symbol=symbol)
