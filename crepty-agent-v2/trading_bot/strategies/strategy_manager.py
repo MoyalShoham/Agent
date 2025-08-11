@@ -1,4 +1,5 @@
 from trading_bot.utils.meta_learner import MetaLearner, build_meta_features
+from trading_bot.utils.indicator_cache import enrich_dataframe
 """
 Strategy Manager - Loads and runs all strategies, returns consensus or weighted signal.
 """
@@ -7,6 +8,8 @@ import importlib
 import os
 import pandas as pd
 from trading_bot.utils.regime_detection import detect_regime
+from time import time
+from loguru import logger
 
 STRATEGY_DIR = os.path.dirname(__file__)
 
@@ -16,30 +19,44 @@ class StrategyManager:
         self.optimized_params = self._load_optimized_params()
         self.performance = {mod.__name__.split('.')[-1]: {'pnl': 0, 'trades': 0, 'win': 0, 'history': []} for mod in self.strategy_modules}
         self.meta_learner = MetaLearner()
-        self._reload_meta_learner_model()
+        self._last_model_mtime = None
+        self._model_reload_interval = 3600  # 1 hour throttle
+        self._last_model_reload_time = 0
+        self._reload_meta_learner_model(force=True)
+        self.research_state = None  # holds latest research snapshot dict
+        self.meta_feature_dim = None
 
-    def _reload_meta_learner_model(self):
-        import os
+    def _reload_meta_learner_model(self, force: bool = False):
         import joblib
         model_path = os.path.join('trading_bot', 'utils', 'meta_learner_model.pkl')
+        now = time()
+        if not force and now - self._last_model_reload_time < self._model_reload_interval:
+            return
         if os.path.exists(model_path):
             try:
+                mtime = os.path.getmtime(model_path)
+                if not force and self._last_model_mtime is not None and mtime == self._last_model_mtime:
+                    # No file change
+                    self._last_model_reload_time = now
+                    return
                 data = joblib.load(model_path)
                 self.meta_learner.model = data['model']
                 self.meta_learner.strategy_list = data.get('strategies', list(self.performance.keys()))
-                from loguru import logger
-                logger.info(f"MetaLearner model loaded from {model_path}")
+                self.meta_feature_dim = data.get('feature_dim')
+                self._last_model_mtime = mtime
+                self._last_model_reload_time = now
+                logger.info(f"MetaLearner model loaded (or updated) from {model_path}")
             except Exception as e:
-                from loguru import logger
                 logger.error(f"Failed to load MetaLearner model: {e}")
+                self._last_model_reload_time = now
 
     def reload_meta_learner_periodically(self):
         # Call this in a background thread or async task if you want periodic reloads
-        import threading, time
+        import threading, time as _t
         def reload_loop():
             while True:
                 self._reload_meta_learner_model()
-                time.sleep(600)  # Reload every 10 minutes
+                _t.sleep(300)  # check every 5 min; will only reload if interval & mtime conditions met
         t = threading.Thread(target=reload_loop, daemon=True)
         t.start()
 
@@ -73,6 +90,8 @@ class StrategyManager:
 
 
     def get_signals(self, df):
+        # Enrich once per cycle
+        enrich_dataframe(df)
         signals = []
         for mod in self.strategy_modules:
             try:
@@ -96,23 +115,53 @@ class StrategyManager:
         if len(perf['history']) > 100:
             perf['history'].pop(0)
 
+    def set_research_state(self, snapshot: dict):
+        self.research_state = snapshot
+
     def consensus_signal(self, df):
+        # Enrich indicators early
+        enrich_dataframe(df)
         # Reload optimized params each call for live updating
         self.optimized_params = self._load_optimized_params()
         regime = detect_regime(df)
         signals = self.get_signals(df)
+        logger.debug(f"[CONSENSUS] Regime={regime} raw_signals={{" + ", ".join(f"{name.split('.')[-1]}:{sig}" for name, sig in signals) + "}}")
         if not signals:
             return 'hold'
-        # Meta-learning: use meta-learner if trained, else fallback to weighted voting
-        features = build_meta_features(df, self.performance, regime)
-        if self.meta_learner.model is not None:
-            # Predict best strategy index
-            best_idx = int(self.meta_learner.predict(features)[0])
-            best_strat = list(self.performance.keys())[best_idx]
-            for name, sig in signals:
-                if name.split('.')[-1] == best_strat:
-                    return sig
-        # Fallback: dynamic weights as before
+        # Optional bypass via env flag
+        import os
+        bypass_meta = os.getenv('BYPASS_META', '0') == '1'
+        # Count basic aggregate for auto-bypass condition
+        buy_count = sum(1 for _, s in signals if s == 'buy')
+        sell_count = sum(1 for _, s in signals if s == 'sell')
+        # If meta model absent or explicitly bypassed, skip to fallback
+        if self.meta_learner.model is None or bypass_meta:
+            return self._fallback_weighted(signals, regime, buy_count, sell_count)
+        # Meta-learning
+        features = build_meta_features(df, self.performance, regime, research=self.research_state)
+        try:
+            if self.meta_learner.model is not None and features.size > 0:
+                flat_input = features.flatten().reshape(1, -1)
+                if self.meta_feature_dim and flat_input.shape[1] != self.meta_feature_dim:
+                    raise ValueError(f"Feature length mismatch trained={self.meta_feature_dim} live={flat_input.shape[1]}")
+                best_idx = int(self.meta_learner.predict(flat_input)[0])
+                perf_keys = list(self.performance.keys())
+                if best_idx < len(perf_keys):
+                    best_strat = perf_keys[best_idx]
+                    for name, sig in signals:
+                        if name.split('.')[-1] == best_strat:
+                            logger.debug(f"[CONSENSUS] MetaLearner selected {best_strat} signal={sig}")
+                            # Auto-bypass if persistent hold while many buys present
+                            if sig == 'hold' and buy_count >= max(3, len(signals)//4):
+                                logger.debug("[CONSENSUS] Auto-bypass meta (persistent hold vs multi buy signals)")
+                                return self._fallback_weighted(signals, regime, buy_count, sell_count)
+                            return sig
+        except Exception as e:
+            logger.error(f"Meta learner prediction failed: {e}; fallback.")
+        return self._fallback_weighted(signals, regime, buy_count, sell_count)
+
+    def _fallback_weighted(self, signals, regime, buy_count, sell_count):
+        # Fallback: dynamic weights
         perf_weights = {}
         for mod in self.strategy_modules:
             strat_name = mod.__name__.split('.')[-1]
@@ -130,7 +179,16 @@ class StrategyManager:
                 'donchian_strategy': 0.5,
                 'ichimoku_strategy': 0.6,
                 'stochastic_strategy': 0.3,
-                'atr_trailing_stop_strategy': 0.5
+                'atr_trailing_stop_strategy': 0.5,
+                'adx_strategy': 0.6,
+                'vwap_reversion_strategy': 0.4,
+                'keltner_breakout_strategy': 0.6,
+                'obv_divergence_strategy': 0.3,
+                'cmf_trend_strategy': 0.5,
+                'rsi_mfi_confluence_strategy': 0.5,
+                'ema_ribbon_trend_strategy': 0.7,
+                'adaptive_kalman_trend_strategy': 0.5,
+                'vol_regime_switch_strategy': 0.5
             },
             'bear': {
                 'bollinger_strategy': 0.4,
@@ -142,7 +200,16 @@ class StrategyManager:
                 'donchian_strategy': 0.5,
                 'ichimoku_strategy': 0.5,
                 'stochastic_strategy': 0.4,
-                'atr_trailing_stop_strategy': 0.6
+                'atr_trailing_stop_strategy': 0.6,
+                'adx_strategy': 0.6,
+                'vwap_reversion_strategy': 0.5,
+                'keltner_breakout_strategy': 0.5,
+                'obv_divergence_strategy': 0.4,
+                'cmf_trend_strategy': 0.6,
+                'rsi_mfi_confluence_strategy': 0.4,
+                'ema_ribbon_trend_strategy': 0.5,
+                'adaptive_kalman_trend_strategy': 0.5,
+                'vol_regime_switch_strategy': 0.6
             },
             'sideways': {
                 'bollinger_strategy': 0.5,
@@ -154,14 +221,41 @@ class StrategyManager:
                 'donchian_strategy': 0.6,
                 'ichimoku_strategy': 0.4,
                 'stochastic_strategy': 0.7,
-                'atr_trailing_stop_strategy': 0.4
+                'atr_trailing_stop_strategy': 0.4,
+                'adx_strategy': 0.5,
+                'vwap_reversion_strategy': 0.6,
+                'keltner_breakout_strategy': 0.4,
+                'obv_divergence_strategy': 0.4,
+                'cmf_trend_strategy': 0.5,
+                'rsi_mfi_confluence_strategy': 0.6,
+                'ema_ribbon_trend_strategy': 0.4,
+                'adaptive_kalman_trend_strategy': 0.4,
+                'vol_regime_switch_strategy': 0.5
             },
         }
         weights = regime_weights.get(regime, {})
         score = {'buy': 0, 'sell': 0, 'hold': 0}
+        # Apply hold penalization & dominance logic
+        import os
+        hold_penalty = float(os.getenv('HOLD_WEIGHT_PENALTY', '0.3'))  # <1 reduces hold dominance
+        dominance_ratio = float(os.getenv('DOMINANCE_RATIO', '1.4'))   # how much a side must exceed others
         for name, sig in signals:
             strat = name.split('.')[-1]
             w = weights.get(strat, 1) * perf_weights.get(strat, 1)
+            if sig == 'hold':
+                w *= hold_penalty
             score[sig] += w
-        best = max(score, key=score.get)
-        return best
+            logger.debug(f"[CONSENSUS] strat={strat} sig={sig} weight={w:.3f} (penalized_hold={sig=='hold'})")
+        # Dominance rule: require side to exceed others by dominance_ratio to override hold bias
+        decision = None
+        if score['buy'] >= score['sell'] * dominance_ratio and score['buy'] >= score['hold'] * dominance_ratio:
+            decision = 'buy'
+            logger.debug(f"[CONSENSUS] Dominance rule triggered: BUY score={score}")
+        elif score['sell'] >= score['buy'] * dominance_ratio and score['sell'] >= score['hold'] * dominance_ratio:
+            decision = 'sell'
+            logger.debug(f"[CONSENSUS] Dominance rule triggered: SELL score={score}")
+        if decision is None:
+            # fallback to highest (already penalized holds)
+            decision = max(score, key=score.get)
+        logger.info(f"[CONSENSUS] (fallback) regime={regime} score={score} decision={decision} hold_penalty={hold_penalty} dominance_ratio={dominance_ratio}")
+        return decision

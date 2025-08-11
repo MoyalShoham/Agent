@@ -1,4 +1,3 @@
-
 import os
 import logging
 from dotenv import load_dotenv
@@ -13,6 +12,16 @@ def main():
     logger.info("Starting Real-Time Crypto Trading Agent System...")
     paper_trading = getattr(settings, 'PAPER_TRADING', True)
     mode = os.getenv('MODE', 'live' if not paper_trading else 'sim')
+    if settings.FUTURES_ENABLED:
+        try:
+            from trading_bot.utils.binance_client import BinanceClient
+            from trading_bot.utils import order_execution
+            spot_client = BinanceClient()
+            equity = spot_client.get_total_usdt_value()
+            order_execution.initialize(external_equity=equity)
+            logger.info(f"Futures mode enabled. Initialized execution with equity={equity:.2f} USDT")
+        except Exception as e:
+            logger.exception(f"Futures initialization failed: {e}")
     manager = ManagerAgent()
     # Optionally, allow for backtest mode using the new backtest_portfolio_allocation
     if mode == 'backtest':

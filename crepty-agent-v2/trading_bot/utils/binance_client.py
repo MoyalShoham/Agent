@@ -147,19 +147,24 @@ class BinanceClient:
                 writer.writerow(row)
         return filename
     def get_total_usdt_value(self):
-        """Estimate total portfolio value in USDT (sum of all assets converted to USDT)."""
+        """Estimate total portfolio value in USDT (sum of all assets converted to USDT). Skips invalid pairs."""
         portfolio = self.get_portfolio()
         total = 0.0
         for asset, amount in portfolio.items():
+            if amount <= 0:
+                continue
             if asset == 'USDT':
                 total += amount
-            else:
-                symbol = f"{asset}USDT"
-                try:
-                    price = self.get_price(symbol)
+                continue
+            symbol = f"{asset}USDT".upper()
+            if hasattr(self, 'valid_symbols') and self.valid_symbols and symbol not in self.valid_symbols:
+                continue  # skip assets without a spot pair
+            try:
+                price = self.get_price(symbol)
+                if price is not None:
                     total += amount * price
-                except Exception:
-                    continue  # skip assets without USDT pair
+            except Exception:
+                continue
         return total
     def bollinger_bands(self, prices, window=20, num_std=2):
         if len(prices) < window:
@@ -282,6 +287,13 @@ class BinanceClient:
         self.client = Client(self.api_key, self.api_secret)
         from trading_bot.config.settings import settings
         self.paper_trading = paper_trading if paper_trading is not None else getattr(settings, 'PAPER_TRADING', True)
+        # Cache valid trading symbols to avoid repeated invalid symbol retries
+        try:
+            info = self.client.get_exchange_info()
+            self.valid_symbols = {s['symbol'] for s in info['symbols'] if s.get('status') == 'TRADING'}
+        except Exception as e:
+            logging.warning(f"[INIT] Failed to cache valid symbols: {e}")
+            self.valid_symbols = set()
 
     @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_min_notional(self, symbol: str):
@@ -441,12 +453,19 @@ class BinanceClient:
             raise RuntimeError(f"Binance order error: {e}")
     # (Removed duplicate __init__)
 
-    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
+    # Remove retry for get_price to prevent noisy retries on permanently invalid symbols
     def get_price(self, symbol: str):
         try:
+            if hasattr(self, 'valid_symbols') and self.valid_symbols and symbol not in self.valid_symbols:
+                # Return None silently for invalid symbol instead of raising
+                return None
             ticker = self.client.get_symbol_ticker(symbol=symbol)
             return float(ticker['price'])
         except Exception as e:
+            msg = str(e)
+            if 'Invalid symbol' in msg or 'INVALID_SYMBOL' in msg:
+                logging.debug(f"[PRICE] Skipping invalid symbol {symbol}")
+                return None
             raise RuntimeError(f"Binance price fetch error: {e}")
 
     # Add more methods as needed for trading, order management, etc.
