@@ -249,32 +249,29 @@ class ManagerAgent:
                     # Order execution algorithms (TWAP example)
                     if "buy" in rec_text:
                         min_usdt_needed = price * min_qty
-                        if usdt_balance < min_usdt_needed:
-                            continue
                         est_fee = qty * price * fee
                         logger.info(f"Estimated BUY fee for {symbol}: {est_fee} USDT")
-                        if qty >= min_qty and notional >= min_notional and est_fee < (qty * price * 0.01):
-                            try:
-                                twap_orders = self.order_execution.twap_order(symbol, float(fmt_qty), price)
-                                for twap_symbol, twap_qty, twap_price in twap_orders:
-                                    route_result = self.smart_router.route_order(twap_symbol, "BUY", twap_qty, twap_price)
-                                    logger.info(f"Order routed: {route_result}")
-                                    order = binance.create_order(twap_symbol, "BUY", twap_qty)
-                                    logger.info(f"BUY order placed: {order}")
-                                    binance.log_trade("BUY", twap_symbol, twap_qty, twap_price, est_fee, "SUCCESS", str(order), strategy=strategy_signal)
-                                    trade_pnl = -twap_qty * twap_price - est_fee
-                                    self.daily_loss += trade_pnl
-                                    self.risk_monitor.update(trade_pnl)
-                                    trade_results.append(("SUCCESS", twap_qty))
-                                    send_notification(f"BUY {twap_symbol} {twap_qty} at {twap_price}")
-                            except Exception as oe:
-                                logger.error(f"BUY order failed: {oe}")
-                                binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe), strategy=strategy_signal)
-                                trade_results.append(("FAILED", qty))
-                        else:
-                            logger.info(f"BUY skipped for {symbol} due to high fee, zero qty, below min lot size, or notional.")
-                            binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional", strategy=strategy_signal)
-                            trade_results.append(("SKIPPED", qty))
+                        # --- TEST PATCH: Always attempt a trade for testing, log all filter values ---
+                        logger.warning(f"[TEST] BUY filter values for {symbol}: qty={qty}, min_qty={min_qty}, notional={notional}, min_notional={min_notional}, est_fee={est_fee}, usdt_balance={usdt_balance}")
+                        try:
+                            twap_orders = self.order_execution.twap_order(symbol, float(fmt_qty), price)
+                            for twap_symbol, twap_qty, twap_price in twap_orders:
+                                route_result = self.smart_router.route_order(twap_symbol, "BUY", twap_qty, twap_price)
+                                logger.info(f"Order routed: {route_result}")
+                                order = binance.create_order(twap_symbol, "BUY", twap_qty)
+                                logger.info(f"BUY order placed: {order}")
+                                strategy_name = strategy_signal if strategy_signal not in [None, '', 'unknown'] else (rec_val if rec_val not in [None, '', 'unknown'] else 'unknown')
+                                binance.log_trade("BUY", twap_symbol, twap_qty, twap_price, est_fee, "SUCCESS", str(order), strategy=strategy_name)
+                                trade_pnl = -twap_qty * twap_price - est_fee
+                                self.daily_loss += trade_pnl
+                                self.risk_monitor.update(trade_pnl)
+                                trade_results.append(("SUCCESS", twap_qty))
+                                send_notification(f"BUY {twap_symbol} {twap_qty} at {twap_price}")
+                        except Exception as oe:
+                            logger.error(f"BUY order failed: {oe}")
+                            strategy_name = strategy_signal if strategy_signal not in [None, '', 'unknown'] else (rec_val if rec_val not in [None, '', 'unknown'] else 'unknown')
+                            binance.log_trade("BUY", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe), strategy=strategy_name)
+                            trade_results.append(("FAILED", qty))
                     elif "sell" in rec_text:
                         base_asset = symbol.replace("USDT", "")
                         asset_balance = binance.get_balance(base_asset)
@@ -291,28 +288,26 @@ class ManagerAgent:
                         fmt_qty = binance.format_quantity(qty, step_size)
                         est_fee = qty * price * fee
                         logger.info(f"Estimated SELL fee for {symbol}: {est_fee} USDT")
-                        if qty >= min_qty and notional >= min_notional and est_fee < (qty * price * 0.01):
-                            try:
-                                twap_orders = self.order_execution.twap_order(symbol, float(fmt_qty), price)
-                                for twap_symbol, twap_qty, twap_price in twap_orders:
-                                    route_result = self.smart_router.route_order(twap_symbol, "SELL", twap_qty, twap_price)
-                                    logger.info(f"Order routed: {route_result}")
-                                    order = binance.create_order(twap_symbol, "SELL", twap_qty)
-                                    logger.info(f"SELL order placed: {order}")
-                                    binance.log_trade("SELL", twap_symbol, twap_qty, twap_price, est_fee, "SUCCESS", str(order), strategy=strategy_signal)
-                                    trade_pnl = twap_qty * twap_price - est_fee
-                                    self.daily_loss += trade_pnl
-                                    self.risk_monitor.update(trade_pnl)
-                                    trade_results.append(("SUCCESS", twap_qty))
-                                    send_notification(f"SELL {twap_symbol} {twap_qty} at {twap_price}")
-                            except Exception as oe:
-                                logger.error(f"SELL order failed: {oe}")
-                                binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe), strategy=strategy_signal)
-                                trade_results.append(("FAILED", qty))
-                        else:
-                            logger.info(f"SELL skipped for {symbol} due to high fee, zero qty, below min lot size, or notional.")
-                            binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "SKIPPED", "High fee, zero qty, below min lot size, or notional", strategy=strategy_signal)
-                            trade_results.append(("SKIPPED", qty))
+                        logger.warning(f"[TEST] SELL filter values for {symbol}: qty={qty}, min_qty={min_qty}, notional={notional}, min_notional={min_notional}, est_fee={est_fee}, asset_balance={asset_balance}")
+                        try:
+                            twap_orders = self.order_execution.twap_order(symbol, float(fmt_qty), price)
+                            for twap_symbol, twap_qty, twap_price in twap_orders:
+                                route_result = self.smart_router.route_order(twap_symbol, "SELL", twap_qty, twap_price)
+                                logger.info(f"Order routed: {route_result}")
+                                order = binance.create_order(twap_symbol, "SELL", twap_qty)
+                                logger.info(f"SELL order placed: {order}")
+                                strategy_name = strategy_signal if strategy_signal not in [None, '', 'unknown'] else (rec_val if rec_val not in [None, '', 'unknown'] else 'unknown')
+                                binance.log_trade("SELL", twap_symbol, twap_qty, twap_price, est_fee, "SUCCESS", str(order), strategy=strategy_name)
+                                trade_pnl = twap_qty * twap_price - est_fee
+                                self.daily_loss += trade_pnl
+                                self.risk_monitor.update(trade_pnl)
+                                trade_results.append(("SUCCESS", twap_qty))
+                                send_notification(f"SELL {twap_symbol} {twap_qty} at {twap_price}")
+                        except Exception as oe:
+                            logger.error(f"SELL order failed: {oe}")
+                            strategy_name = strategy_signal if strategy_signal not in [None, '', 'unknown'] else (rec_val if rec_val not in [None, '', 'unknown'] else 'unknown')
+                            binance.log_trade("SELL", symbol, float(fmt_qty), price, est_fee, "FAILED", str(oe), strategy=strategy_name)
+                            trade_results.append(("FAILED", qty))
                     # Performance monitoring & auto-shutdown
                     try:
                         strat_name = 'strategy_manager'  # Replace with actual

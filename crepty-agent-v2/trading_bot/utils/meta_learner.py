@@ -40,7 +40,10 @@ class MetaLearner:
 # y: best strategy index (or signal)
 def build_meta_features(df, strategy_perf, regime):
     features = []
-    vol = df['close'].pct_change().rolling(20).std().iloc[-1] if 'close' in df and len(df['close']) > 20 else 0
+    if df is not None and 'close' in df and len(df['close']) > 20:
+        vol = df['close'].pct_change().rolling(20).std().iloc[-1]
+    else:
+        vol = 0
     for strat, perf in strategy_perf.items():
         features.append([
             {'bull':0, 'bear':1, 'sideways':2}.get(regime,2),

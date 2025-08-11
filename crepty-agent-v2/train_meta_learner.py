@@ -18,8 +18,16 @@ def prepare_training_data(df, strategy_list):
         # Build features for each row
         perf = {s: {'pnl': 0, 'trades': 0, 'win': 0, 'history': []} for s in strategy_list}
         # Optionally, fill perf with rolling stats up to this row
-        features = build_meta_features(None, perf, row.get('regime', 'sideways'))
-        X.append(features)
+        symbol = row['symbol']
+        price_df = None
+        price_csv = f"{symbol}_1h.csv"
+        if os.path.exists(price_csv):
+            try:
+                price_df = pd.read_csv(price_csv)
+            except Exception:
+                price_df = None
+        features = build_meta_features(price_df, perf, row.get('regime', 'sideways'))
+        X.append(features.flatten())
         # y: index of strategy used
         strat_idx = strategy_list.index(row['strategy']) if row['strategy'] in strategy_list else 0
         y.append(strat_idx)

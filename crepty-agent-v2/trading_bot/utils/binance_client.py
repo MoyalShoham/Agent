@@ -167,6 +167,9 @@ class BinanceClient:
             raise RuntimeError(f"Binance LOT_SIZE fetch error: {e}")
     def log_trade(self, action: str, symbol: str, qty: float, price: float, fee: float, status: str, details: str = "", strategy: str = "unknown"):
         import csv, os, datetime
+        # Always use the actual strategy name if available, fallback to 'unknown'
+        actual_strategy = strategy if strategy not in [None, '', 'unknown'] else 'unknown'
+        # Log to main trade log
         log_file = os.path.join(os.path.dirname(__file__), '../../trade_log.csv')
         log_file = os.path.abspath(log_file)
         file_exists = os.path.isfile(log_file)
@@ -188,8 +191,27 @@ class BinanceClient:
                 fee,
                 status,
                 details,
-                strategy,
+                actual_strategy,
                 current_total_usdt
+            ])
+        # Also log to the strategy-specific log file for ML/analytics
+        strat_log_file = os.path.join(os.path.dirname(__file__), '../../trade_log_clean_fixed_with_strategy.csv')
+        strat_log_file = os.path.abspath(strat_log_file)
+        strat_exists = os.path.isfile(strat_log_file)
+        with open(strat_log_file, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            if not strat_exists:
+                writer.writerow(["timestamp", "action", "symbol", "qty", "price", "fee", "status", "details", "strategy"])
+            writer.writerow([
+                datetime.datetime.utcnow().isoformat(),
+                action,
+                symbol,
+                qty,
+                price,
+                fee,
+                status,
+                details,
+                actual_strategy
             ])
     def get_trade_fee(self, symbol: str) -> float:
         try:

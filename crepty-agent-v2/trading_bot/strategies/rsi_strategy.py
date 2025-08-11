@@ -16,13 +16,12 @@ def generate_signal(df, rsi_buy=30, rsi_sell=70):
     rsi = 100 - (100 / (1 + rs))
     last_rsi = rsi.iloc[-1]
 
-    # ML signal integration for risk control and confirmation
-    ml_signal = generate_ml_signal(df)
-    if ml_signal == 'high_risk':
-        return 'hold'  # Block trade if ML says high risk
+    import logging
+    logging.getLogger().info(f"[RSI] last_rsi={last_rsi}")
 
-    if last_rsi < rsi_buy and (ml_signal in ['buy', 'hold']):
+    # More aggressive: buy if RSI < 45, sell if RSI > 60
+    if last_rsi < 45:
         return 'buy'
-    elif last_rsi > rsi_sell and (ml_signal in ['sell', 'hold']):
+    elif last_rsi > 60:
         return 'sell'
     return 'hold'

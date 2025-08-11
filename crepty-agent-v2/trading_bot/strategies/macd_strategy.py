@@ -11,8 +11,11 @@ def generate_signal(df):
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     signal = macd.ewm(span=9, adjust=False).mean()
-    if macd.iloc[-2] < signal.iloc[-2] and macd.iloc[-1] > signal.iloc[-1]:
+    import logging
+    logging.getLogger().info(f"[MACD] macd={macd.iloc[-1]}, signal={signal.iloc[-1]}")
+    # More aggressive: buy if macd > 0, sell if macd < 0
+    if macd.iloc[-1] > 0:
         return 'buy'
-    elif macd.iloc[-2] > signal.iloc[-2] and macd.iloc[-1] < signal.iloc[-1]:
+    elif macd.iloc[-1] < 0:
         return 'sell'
     return 'hold'
