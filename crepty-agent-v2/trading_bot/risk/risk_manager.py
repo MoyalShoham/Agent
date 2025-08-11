@@ -45,7 +45,7 @@ class RiskManager:
         self.max_correlation = 0.5     # Reduced from 0.7 to 0.5
         self.max_concentration = 0.2   # Reduced from 0.3 to 0.2
         self.max_leverage = 1.5        # Reduced from 3.0 to 1.5
-        self.max_concurrent_positions = 5  # 🔧 NEW: Limit concurrent positions
+        self.max_concurrent_positions = 8  # 🔧 UPDATED: Increased from 5 to 8 for expanded symbol set
         
         # Portfolio tracking
         self.positions: Dict[str, PositionInfo] = {}
@@ -205,7 +205,9 @@ class RiskManager:
 
     def allow_trade(self):
         drawdown = self.get_drawdown()
-        if drawdown > self.max_drawdown * 1.5:
+        # 🔧 TRAINING MODE: Increased threshold to 20% for data gathering
+        critical_threshold = self.max_drawdown * 2.0  # 10% * 2.0 = 20%
+        if drawdown > critical_threshold:
             self.logger.error(f"Drawdown {drawdown:.2%} critical. Blocking new trades.")
             return False
         

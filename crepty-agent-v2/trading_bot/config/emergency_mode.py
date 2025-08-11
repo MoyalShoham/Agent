@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Emergency Trading Mode - Conservative settings to stop losses
+Emergency Trading Mode - Relaxed for training data gathering
 """
 
 EMERGENCY_MODE = {
     'enabled': True,
-    'max_daily_loss': 2.0,  # Stop trading if daily loss exceeds $2
-    'min_win_rate': 0.4,   # Pause if win rate drops below 40%
-    'position_size_reduction': 0.5,  # Additional 50% position size reduction
-    'require_unanimous_signals': True,  # Need stronger signal consensus
-    'pause_on_consecutive_losses': 3,  # Pause after 3 consecutive losses
-    'blacklisted_symbols': ['ADAUSDT', 'XRPUSDT'],  # Worst performers
+    'max_daily_loss': 3.0,  # Increased from $2 to $3 temporarily
+    'min_win_rate': 0.3,   # Lowered from 40% to 30% temporarily
+    'position_size_reduction': 0.7,  # Less aggressive reduction
+    'require_unanimous_signals': False,  # Allow more signals
+    'pause_on_consecutive_losses': 5,  # Increased from 3 to 5
+    'blacklisted_symbols': ['ADAUSDT', 'KASUSDT'],  # Worst performer + Invalid symbol
+    'training_mode': True,  # Flag for training data gathering
 }
 
 def should_trade(daily_pnl, recent_win_rate, consecutive_losses, symbol=None):
@@ -39,4 +40,4 @@ def get_emergency_position_multiplier():
         return EMERGENCY_MODE['position_size_reduction']
     return 1.0
 
-print("Emergency trading mode: ACTIVE")
+print("Emergency mode: TRAINING DATA GATHERING")

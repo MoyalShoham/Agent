@@ -48,12 +48,12 @@ class Position:
 class PositionManager:
     def __init__(self, symbols, max_leverage: float = 1.5, risk_per_trade: float = 0.0005):
         self.positions: Dict[str, Position] = {s: Position(symbol=s) for s in symbols}
-        # 🔧 EMERGENCY SETTINGS - Further reduced to stop losses
-        self.max_leverage = max_leverage * 0.25  # Reduce leverage by 75%
-        self.risk_per_trade = risk_per_trade * 0.15  # Reduce risk per trade to 15% of original
-        self.max_concurrent_positions = 3  # Limit to 3 positions maximum (was 5)
-        self.margin_buffer = 0.5  # Keep 50% margin as buffer (was 30%)
-        self.position_size_multiplier = 0.15  # Reduce all position sizes to 15% (was 30%)
+        # 🔧 EMERGENCY SETTINGS - Adjusted for minimum order sizes  
+        self.max_leverage = max_leverage * 0.5  # Reduce leverage by 50%
+        self.risk_per_trade = risk_per_trade * 2.0  # Increase to 200% for minimum order sizes
+        self.max_concurrent_positions = 5  # Allow 5 positions for diversity
+        self.margin_buffer = 0.3  # Keep 30% margin as buffer
+        self.position_size_multiplier = 3.0  # Increase to 3.0 to reach minimum order sizes
         self.equity = 0.0
         self.last_equity_update = 0.0
 
