@@ -1,2 +1,6 @@
 agent_env/
 .env
+*.csv
+*.pkl
+*.txt
+*.joblib

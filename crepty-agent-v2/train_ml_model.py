@@ -140,9 +140,16 @@ def train_ml_model_with_historical_data() -> bool:
         try:
             X_train_scaled = scaler.fit_transform(X_train)
             X_test_scaled = scaler.transform(X_test)
-            model.fit(X_train_scaled, y_train)
             from sklearn.metrics import accuracy_score
-            acc = accuracy_score(y_test, model.predict(X_test_scaled))
+            if name == 'xgboost':
+                # Map labels: -1 -> 0, 0 -> 1, 1 -> 2
+                y_train_xgb = y_train.map({-1: 0, 0: 1, 1: 2})
+                y_test_xgb = y_test.map({-1: 0, 0: 1, 1: 2})
+                model.fit(X_train_scaled, y_train_xgb)
+                acc = accuracy_score(y_test_xgb, model.predict(X_test_scaled))
+            else:
+                model.fit(X_train_scaled, y_train)
+                acc = accuracy_score(y_test, model.predict(X_test_scaled))
             model_accuracies[name] = acc
             # Feature importance (if available)
             if hasattr(model, 'feature_importances_'):
