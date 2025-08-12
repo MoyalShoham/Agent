@@ -32,61 +32,43 @@ class AIEnhancedMLSignalGenerator:
         self.load_model()
     
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate technical indicators for ML features"""
+        """Calculate technical indicators for ML features - ALIGNED WITH TRAINED MODEL"""
         if len(df) < 20:
             return pd.DataFrame()
             
         close = df['close'] if 'close' in df.columns else pd.Series([0])
-        high = df['high' ] if 'high'  in df.columns else close
-        low = df['low' ] if 'low'  in df.columns else close
-        volume = df['volume'] if 'volume' in df.columns else pd.Series([1] * len(close))
+        
         features = pd.DataFrame(index=df.index)
+        
+        # ONLY the features the model was trained on (9 features total)
         # Price-based features
         features['returns'] = close.pct_change()
-        features['returns_2d'] = close.pct_change(2)
-        features['returns_5d'] = close.pct_change(5)
-        # Moving averages
+        
+        # Moving averages  
         features['sma_10'] = close.rolling(10).mean()
         features['sma_20'] = close.rolling(20).mean()
-        features['sma_50'] = close.rolling(50, min_periods=20).mean()
         features['price_vs_sma_10'] = close / features['sma_10'] - 1
         features['price_vs_sma_20'] = close / features['sma_20'] - 1
-        features['price_vs_sma_50'] = close / features['sma_50'] - 1
+        
         # RSI
         delta = close.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         features['rsi'] = 100 - (100 / (1 + rs))
-        features['rsi_overbought'] = (features['rsi'] > 70).astype(int)
-        features['rsi_oversold'] = (features['rsi'] < 30).astype(int)
-        # MACD
+        
+        # MACD  
         exp1 = close.ewm(span=12).mean()
         exp2 = close.ewm(span=26).mean()
         features['macd'] = exp1 - exp2
         features['macd_signal'] = features['macd'].ewm(span=9).mean()
-        features['macd_histogram'] = features['macd'] - features['macd_signal']
-        features['macd_bullish'] = (features['macd'] > features['macd_signal']).astype(int)
-        # Bollinger Bands
-        bb_sma = close.rolling(20).mean()
-        bb_std = close.rolling(20).std()
-        features['bb_upper'] = bb_sma + (bb_std * 2)
-        features['bb_lower'] = bb_sma - (bb_std * 2)
-        features['bb_position'] = (close - features['bb_lower']) / (features['bb_upper'] - features['bb_lower'])
-        features['bb_squeeze'] = (features['bb_upper'] - features['bb_lower']) / bb_sma
+        
         # Volatility
         features['volatility'] = close.rolling(20).std()
-        features['volatility_ratio'] = features['volatility'] / features['volatility'].rolling(50, min_periods=20).mean()
-        # Volume features
-        features['volume_sma'] = volume.rolling(20).mean()
-        features['volume_ratio'] = volume / features['volume_sma']
-        features['price_volume'] = close * volume
-        # High/Low features
-        features['high_low_ratio'] = high / low
-        features['close_position'] = (close - low) / (high - low)
-        # Use non-deprecated forward fill then zero fill
+        
+        # Fill NaN values and return EXACTLY 9 features to match trained model
         return features.ffill().fillna(0)
-
+    
     def load_model(self):
         """Load the ML model and scaler from the specified path.
         Supports legacy tuple (model, scaler), dict {'model':..., 'scaler':...}, or single estimator/pipeline.

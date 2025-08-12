@@ -1,6 +1,6 @@
 {
-  "model_name": "RandomForest_2",
+  "model_name": "RandomForest_1",
   "accuracy": 1.0,
-  "training_date": "2025-08-12T09:01:30.525699",
-  "total_iterations": 5
+  "training_date": "2025-08-12T12:12:16.613138",
+  "total_iterations": 4
 }
