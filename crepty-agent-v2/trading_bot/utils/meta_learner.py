@@ -76,25 +76,48 @@ def _safe_number(x, default=0.0):
     return float(x)
 
 
+def _exp_decay_mean(values, alpha: float = 0.2):
+    if not values:
+        return 0.0
+    acc = 0.0
+    wsum = 0.0
+    for i, v in enumerate(reversed(values)):
+        w = (1 - alpha) ** i
+        acc += w * v
+        wsum += w
+    return acc / wsum if wsum else 0.0
+
+
 def build_meta_features(df, strategy_perf, regime, research: dict | None = None):
     """Build a (n_strategies x n_features) feature matrix with NaN-safe values.
 
-    Returns np.ndarray; guarantees no NaN/inf values.
+    Added features:
+    - short_vol / long_vol ratio
+    - decayed pnl mean
+    - recent win rate (last 10) vs long win rate (all) ratio
+    - volatility of pnl history (stdev) and its inverse as stability
+    - drawdown ratio (max_dd / cumulative positive pnl + 1e-9)
+    Total feature count increase.
     """
     features = []
     # Volatility (20-period) – guard against NaN
     if df is not None and isinstance(df, (pd.DataFrame, dict)) and 'close' in df:
         try:
             closes = df['close'] if isinstance(df, pd.DataFrame) else pd.Series(df['close'])
-            if len(closes) > 20:
-                vol_val = closes.pct_change().rolling(20).std().iloc[-1]
+            if len(closes) > 50:
+                ret = closes.pct_change()
+                vol_val = ret.rolling(20).std().iloc[-1]
+                vol_short = ret.rolling(10).std().iloc[-1]
+                vol_long = ret.rolling(50).std().iloc[-1]
+                vol_ratio = (vol_short / (vol_long + 1e-9)) if vol_long else 0.0
             else:
-                vol_val = 0.0
+                vol_val = 0.0; vol_ratio = 0.0
         except Exception:
-            vol_val = 0.0
+            vol_val = 0.0; vol_ratio = 0.0
     else:
-        vol_val = 0.0
+        vol_val = 0.0; vol_ratio = 0.0
     vol_val = _safe_number(vol_val)
+    vol_ratio = _safe_number(vol_ratio)
 
     # Research features (optional)
     funding_z = _safe_number(research.get('funding_z', 0.0) if research else 0.0)
@@ -106,7 +129,7 @@ def build_meta_features(df, strategy_perf, regime, research: dict | None = None)
 
     for strat in strategy_names:
         perf = strategy_perf[strat]
-        hist = perf.get('history', [])[-50:] if perf else []
+        hist = perf.get('history', [])[-100:] if perf else []
         hist = [h for h in hist if h is not None]
         sharpe = _safe_number(_compute_sharpe(hist)) if hist else 0.0
         max_dd = _safe_number(_compute_max_drawdown(np.cumsum(hist))) if hist else 0.0
@@ -115,6 +138,15 @@ def build_meta_features(df, strategy_perf, regime, research: dict | None = None)
         win_rate = (wins / trades) if trades else 0.0
         win_rate = _safe_number(win_rate)
         avg_pnl = _safe_number(np.mean(hist)) if hist else 0.0
+        # New metrics
+        decayed_pnl = _safe_number(_exp_decay_mean(hist, 0.25))
+        recent_hist = hist[-10:]
+        wins_recent = sum(1 for x in recent_hist if x > 0)
+        win_rate_recent = wins_recent / len(recent_hist) if recent_hist else 0.0
+        win_rate_ratio = _safe_number(win_rate_recent / (win_rate + 1e-9)) if win_rate else 0.0
+        pnl_std = _safe_number(np.std(hist)) if len(hist) > 2 else 0.0
+        stability = _safe_number(1.0 / (1.0 + pnl_std))
+        drawdown_ratio = _safe_number(max_dd / (abs(sum(x for x in hist if x > 0)) + 1e-9)) if hist else 0.0
 
         features.append([
             {'bull': 0, 'bear': 1, 'sideways': 2}.get(regime, 2),
@@ -125,7 +157,14 @@ def build_meta_features(df, strategy_perf, regime, research: dict | None = None)
             max_dd,
             funding_z,
             oi_change,
-            imbalance
+            imbalance,
+            vol_ratio,
+            decayed_pnl,
+            win_rate_recent,
+            win_rate_ratio,
+            pnl_std,
+            stability,
+            drawdown_ratio
         ])
         returns_matrix.append(hist if hist else [0.0])
 
@@ -137,17 +176,13 @@ def build_meta_features(df, strategy_perf, regime, research: dict | None = None)
             if len(r) < max_len:
                 r = list(r) + [0.0] * (max_len - len(r))
             norm_returns.append(r)
-        # Only attempt correlation if at least 2 strategies AND more than 1 data point
         if len(norm_returns) >= 2 and max_len > 1:
             try:
                 corr = np.corrcoef(norm_returns)
                 corr = np.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
                 for i in range(len(features)):
-                    if len(features) > 1:
-                        others = [corr[i][j] for j in range(len(features)) if j != i]
-                        mean_corr = np.mean(others) if others else 0.0
-                    else:
-                        mean_corr = 0.0
+                    others = [corr[i][j] for j in range(len(features)) if j != i]
+                    mean_corr = np.mean(others) if others else 0.0
                     features[i].append(_safe_number(mean_corr))
             except Exception:
                 for i in range(len(features)):
@@ -155,11 +190,10 @@ def build_meta_features(df, strategy_perf, regime, research: dict | None = None)
         else:
             for i in range(len(features)):
                 features[i].append(0.0)
-    # If no strategies, return empty array
+
     if not features:
-        return np.empty((0, 10))  # 9 base + 1 corr
+        return np.empty((0, 0))
 
     feat_array = np.array(features, dtype=float)
-    # Final safety clean
     feat_array = np.nan_to_num(feat_array, nan=0.0, posinf=0.0, neginf=0.0)
     return feat_array

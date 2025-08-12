@@ -39,25 +39,25 @@ class OpenAIClient:
         """Request JSON structured output; retry parse/validation if malformed.
         schema_validator: returns True if schema OK.
         """
+        prompt = prompt + "\nRespond ONLY with a single minified JSON object. No markdown fences, no prose."
         for attempt in range(1, max_attempts + 1):
             raw = self.ask(prompt, model=model)
-            # Try to locate JSON block
-            json_text = raw
+            json_text = raw.strip()
+            # Extract fenced block if present
             if '```' in raw:
-                # Extract first fenced block
                 parts = raw.split('```')
-                if len(parts) >= 2:
-                    # skip possible language hint
-                    candidate = parts[1]
-                    if candidate.strip().startswith('{'):
-                        json_text = candidate
-                    else:
-                        # maybe third part
-                        for p in parts[1:]:
-                            if p.strip().startswith('{'):
-                                json_text = p
-                                break
-            json_text = json_text.strip().strip('`')
+                for p in parts[1:]:
+                    pt = p.strip()
+                    if pt.startswith('{'):
+                        json_text = pt
+                        break
+            # Fallback: locate outermost braces
+            if not json_text.strip().startswith('{'):
+                start = raw.find('{')
+                end = raw.rfind('}')
+                if start != -1 and end != -1 and end > start:
+                    json_text = raw[start:end+1]
+            json_text = json_text.strip().lstrip('`').rstrip('`')
             try:
                 data = json.loads(json_text)
             except Exception:
@@ -67,8 +67,7 @@ class OpenAIClient:
             if schema_validator and not schema_validator(data):
                 if attempt == max_attempts:
                     raise RuntimeError(f"Model JSON schema invalid after {max_attempts} attempts: {data}")
-                # Append correction instruction
-                prompt = prompt + "\nThe previous JSON did not follow the required schema. Please output ONLY a corrected JSON object."
+                prompt += "\nThe previous JSON did not match the required schema. Output ONLY corrected JSON."
                 continue
             return data
         return {}

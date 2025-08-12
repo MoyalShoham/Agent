@@ -443,26 +443,49 @@ class ManagerAgent:
                         strat_df = df[['open','high','low','close']].copy()
                         signal = strategy_manager.consensus_signal(strat_df)
                         
+                        # --- REVERSAL THROTTLE: block flips unless price moved enough (ATR * k or min pct) ---
+                        try:
+                            enforce_rev = os.getenv('REVERSAL_ENFORCE', '1') == '1'
+                            if enforce_rev and signal in ('buy','sell'):
+                                from trading_bot.utils import order_execution as _oe_chk
+                                pos_obj_before_chk = _oe_chk._position_manager.get_position(sym) if _oe_chk._position_manager else None
+                                if pos_obj_before_chk and abs(pos_obj_before_chk.size) > 0:
+                                    current_dir = 1 if pos_obj_before_chk.size > 0 else -1
+                                    incoming_dir = 1 if signal == 'buy' else -1
+                                    if incoming_dir != current_dir:  # reversal attempt
+                                        k = float(os.getenv('REVERSAL_MIN_ATR_FRACTION', '0.15'))
+                                        pct = float(os.getenv('REVERSAL_MIN_PRICE_PCT', '0.001'))  # 0.1%
+                                        entry_price = getattr(pos_obj_before_chk, 'entry_price', None) or price
+                                        atr_component = (atr * k) if (atr and atr > 0) else 0.0
+                                        pct_component = price * pct
+                                        threshold = max(atr_component, pct_component)
+                                        price_move = abs(price - entry_price)
+                                        if price_move < threshold:
+                                            logger.info(f"[REVERSAL_BLOCK] {sym} price_move={price_move:.6f} < threshold={threshold:.6f} (entry={entry_price:.6f}, price={price:.6f}, atr={atr:.6f}) -> forcing hold")
+                                            signal = 'hold'
+                        except Exception as rev_e:
+                            logger.error(f"[REVERSAL_BLOCK] error applying reversal throttle for {sym}: {rev_e}")
+                        # --- END REVERSAL THROTTLE ---
+                        
                         # 🚨 EMERGENCY: Get enhanced ML signal with confidence
                         try:
                             enhanced_ml_result = await generate_ai_enhanced_ml_signal(
                                 symbol=sym,
                                 price_data=strat_df
                             )
-                            ml_confidence = enhanced_ml_result.get('confidence', 0)
-                            ai_signal = enhanced_ml_result.get('ai_signal', 'hold')
+                            # Enhanced result uses -1/0/1 numeric signal
+                            ml_signal_val = enhanced_ml_result.get('enhanced_signal', 0)
+                            ml_confidence = float(enhanced_ml_result.get('confidence', 0.0))  # 0-1 scale
+                            ai_signal = {1: 'buy', -1: 'sell', 0: 'hold'}.get(ml_signal_val, 'hold')
+                            signal_confidence = ml_confidence  # keep 0-1 scale
                             
-                            # Convert to numeric for consensus
-                            signal_confidence = ml_confidence * 100  # Convert to percentage
-                            
-                            logger.info(f"[EMERGENCY_SIGNAL] {sym}: ML confidence={signal_confidence:.1f}%, AI signal={ai_signal}")
+                            logger.info(f"[EMERGENCY_SIGNAL] {sym}: ML confidence={signal_confidence:.2%}, AI signal={ai_signal}")
                         except Exception as ml_err:
                             logger.error(f"[EMERGENCY_SIGNAL] {sym} ML error: {ml_err}")
-                            signal_confidence = 0
+                            signal_confidence = 0.0
                             ai_signal = 'hold'
-                        
-                        # 🚨 EMERGENCY: Check if trade is allowed
-                        trade_allowed, reason = emergency_controls.should_allow_trade(sym, signal_confidence)
+                        # Adjust confidence threshold interpretation: emergency controls expect percent-like threshold (0-1 if <=1)
+                        trade_allowed, reason = emergency_controls.should_allow_trade(sym, signal_confidence * 100 if emergency_controls.min_confidence > 1 else signal_confidence)
                         if not trade_allowed:
                             logger.warning(f"[EMERGENCY_BLOCK] {sym}: {reason}")
                             continue

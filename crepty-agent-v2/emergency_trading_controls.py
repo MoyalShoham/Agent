@@ -14,9 +14,13 @@ class EmergencyTradingControls:
         self.last_trades_file = 'emergency_last_trades.json'
         self.daily_pnl_file = 'emergency_daily_pnl.json'
         self.load_state()
-        
-        # Emergency settings from .env
-        self.min_confidence = float(os.getenv('AI_SIGNAL_CONFIDENCE_THRESHOLD', '85'))
+        # Interpret confidence threshold; allow legacy percent (>1) or fraction (<=1)
+        raw_conf = os.getenv('AI_SIGNAL_CONFIDENCE_THRESHOLD', '0.6')
+        try:
+            conf_val = float(raw_conf)
+        except Exception:
+            conf_val = 0.6
+        self.min_confidence = conf_val  # store raw; caller will adapt scale
         self.min_trade_interval = int(os.getenv('MIN_TRADE_INTERVAL_MINUTES', '15'))
         self.cooldown_period = int(os.getenv('COOLDOWN_PERIOD_MINUTES', '30'))
         self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSSES', '0.05'))
@@ -53,13 +57,18 @@ class EmergencyTradingControls:
             print(f"Error saving emergency state: {e}")
     
     def should_allow_trade(self, symbol: str, signal_confidence: float = 0) -> tuple[bool, str]:
-        """Emergency check if trade should be allowed"""
+        """Emergency check if trade should be allowed.
+        signal_confidence passed in should match scale of self.min_confidence (auto handled by caller)."""
         now = datetime.now()
         today = now.strftime('%Y-%m-%d')
-        
+        # Normalize: if min_confidence > 1 treat as percent values
+        min_conf = self.min_confidence
+        sc = signal_confidence
+        if min_conf > 1 and sc <= 1:
+            sc *= 100
         # 1. Check signal confidence threshold
-        if signal_confidence < self.min_confidence:
-            return False, f"Signal confidence {signal_confidence:.1f}% < required {self.min_confidence}%"
+        if sc < min_conf:
+            return False, f"Signal confidence {sc:.2f} < required {min_conf}"
         
         # 2. Check minimum trade interval
         if symbol in self.last_trades:
