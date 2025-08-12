@@ -6,6 +6,8 @@ from datetime import datetime
 from trading_bot.utils.openai_client import OpenAIClient
 from typing import Dict, Any
 from .research_data_sources import fetch_combined_research
+from trading_bot.utils.external_data import enrich_research_with_external  # new
+from trading_bot.config.settings import settings  # new
 
 class ResearchAgent:
     def __init__(self, symbol: str):
@@ -80,28 +82,27 @@ class ResearchAgent:
 
     async def research_snapshot(self) -> Dict[str, Any]:
         external = await fetch_combined_research()
-        # Placeholder for funding/OI (requires futures endpoints)
         snapshot = {
             **external,
             "funding_rate": None,
             "funding_z": None,
             "open_interest_change_pct": None
         }
+        # Enrich with CoinGecko + funding for futures symbols if enabled
+        if settings.FUTURES_RESEARCH_ENABLED:
+            try:
+                snapshot = await enrich_research_with_external(snapshot, [self.symbol])
+            except Exception as e:
+                logger.error(f"External enrichment failed: {e}")
         synthesis = await self._synthesize(snapshot)
         merged = {**snapshot, **synthesis}
         logger.info(f"Research snapshot: {merged}")
         return merged
 
     async def research(self, market_data: MarketData) -> int:
-        """
-        Placeholder research method. Returns 1 (buy), 0 (hold), or -1 (sell).
-        Extend with real research logic as needed.
-        """
         logger.info(f"[RESEARCH] ResearchAgent analyzing market data for {market_data.symbol}")
-        # Example: always return 1 (buy)
         return 1
 
     async def receive_message(self, message):
-        # Example: log the received message
         from loguru import logger as _l
         _l.info(f"ResearchAgent received message: {message}")

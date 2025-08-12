@@ -498,4 +498,21 @@ class BinanceClient:
                 return None
             raise RuntimeError(f"Binance price fetch error: {e}")
 
-    # Add more methods as needed for trading, order management, etc.
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
+    def get_klines(self, symbol: str, interval: str = '1h', limit: int = 500, startTime: int | None = None, endTime: int | None = None):
+        """Lightweight wrapper for spot klines to support scripts expecting BinanceClient.get_klines.
+        Returns raw list as provided by python-binance. Parameters mirror official API.
+        """
+        try:
+            params = {
+                'symbol': symbol,
+                'interval': interval,
+                'limit': min(limit, 1000)
+            }
+            if startTime is not None:
+                params['startTime'] = startTime
+            if endTime is not None:
+                params['endTime'] = endTime
+            return self.client.get_klines(**params)
+        except Exception as e:
+            raise RuntimeError(f"Binance get_klines error: {e}")

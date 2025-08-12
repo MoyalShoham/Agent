@@ -17,7 +17,9 @@ import importlib
 import os
 import csv
 from datetime import datetime
-
+# --- NEW: external funding scaling helper ---
+from trading_bot.utils.external_data import funding_position_scale  # added
+from trading_bot.utils.futures_metrics import futures_metrics_cache  # NEW
 
 class ManagerAgent:
     def __init__(self):
@@ -44,6 +46,16 @@ class ManagerAgent:
         # --- Risk Management Layer ---
         from trading_bot.risk.risk_manager import RiskManager
         self.risk_manager = RiskManager(max_drawdown=0.10, window=50, min_position=0.2, default_position=1.0)
+        # cache latest research snapshots per symbol
+        self._latest_research: dict[str, dict] = {}
+        self._last_metrics_persist = None
+        self._metrics_file = 'futures_metrics.csv'
+        if not os.path.exists(self._metrics_file):
+            try:
+                with open(self._metrics_file, 'w', newline='') as f:
+                    csv.writer(f).writerow(['timestamp','symbol','open_interest','open_interest_change_pct','long_short_ratio','basis','funding_rate','liquidation_pressure'])
+            except Exception:
+                pass
 
     def register_agent(self, name: str, agent):
         """Register an agent object by name."""
@@ -52,6 +64,38 @@ class ManagerAgent:
             logger.info(f"Registered agent: {name}")
         except Exception:
             pass
+
+    async def _persist_metrics(self, symbol: str, metrics: dict):
+        try:
+            with open(self._metrics_file, 'a', newline='') as f:
+                csv.writer(f).writerow([
+                    datetime.utcnow().isoformat(),
+                    symbol,
+                    metrics.get('open_interest'),
+                    f"{metrics.get('open_interest_change_pct', ''):.6f}" if metrics.get('open_interest_change_pct') is not None else '',
+                    metrics.get('long_short_ratio'),
+                    f"{metrics.get('basis', ''):.6f}" if metrics.get('basis') is not None else '',
+                    f"{metrics.get('funding_rate', ''):.6f}" if metrics.get('funding_rate') is not None else '',
+                    metrics.get('liquidation_pressure')
+                ])
+        except Exception as e:
+            logger.error(f"Metrics persist error: {e}")
+
+    def _risk_overlay_scale(self, symbol: str, metrics: dict, research: dict | None) -> float:
+        try:
+            oi_change = metrics.get('open_interest_change_pct') or 0
+            basis = metrics.get('basis') or 0
+            lsr = metrics.get('long_short_ratio') or 1
+            macro_bias = (research or {}).get('macro_bias') if isinstance(research, dict) else None
+            scale = 1.0
+            if macro_bias == 'bearish' and oi_change > settings.OPEN_INTEREST_RISE_THRESHOLD and basis > settings.BASIS_POSITIVE_THRESHOLD:
+                scale *= settings.RISK_OVERLAY_REDUCTION
+            if macro_bias == 'bullish' and oi_change > settings.OPEN_INTEREST_RISE_THRESHOLD and lsr > settings.LONG_SHORT_EXTREME:
+                scale *= settings.RISK_OVERLAY_EXPANSION
+            return scale
+        except Exception as e:
+            logger.error(f"risk overlay error {symbol}: {e}")
+            return 1.0
 
     async def run(self):
         import datetime
@@ -81,6 +125,8 @@ class ManagerAgent:
         core_research_agent = ResearchAgent(core_symbol)
         research_last_time = datetime.datetime.utcnow()
         research_interval = 300
+        # NEW: launch per-symbol research tasks for futures
+        symbol_research_agents = {sym: ResearchAgent(sym) for sym in futures_symbols}
 
         # Prepare secondary CSV log file
         csv_path = 'futures_trades_log.csv'
@@ -104,7 +150,7 @@ class ManagerAgent:
                     ev.get('symbol'),
                     ev.get('signal',''),
                     ev.get('price'),
-                    ev.get('atr'),
+                    ev.get('atr'),  # fixed missing parenthesis
                     ev.get('target_qty'),
                     ev.get('prev_pos'),
                     ev.get('new_pos'),
@@ -113,7 +159,6 @@ class ManagerAgent:
                     ev.get('realized_pnl',''),
                     ev.get('simulated', False)
                 ])
-                # Update risk manager with realized PnL
                 try:
                     pnl = float(ev.get('realized_pnl', 0) or 0)
                     self.risk_manager.update(pnl)
@@ -256,7 +301,6 @@ class ManagerAgent:
                                 continue
                             # Calculate qty to try to meet minNotional (with 15% buffer) - OLD METHOD
                             # min_notional_buffer = min_notional * 1.15 if min_notional else 0
-                            # qty = (usdt_balance * 0.5) / price if price > 0 else 0
                             
                             # NEW: AI-Enhanced Position Sizing
                             min_notional_buffer = min_notional * 1.15 if min_notional else 0
@@ -386,7 +430,6 @@ class ManagerAgent:
                                 logger.info(f"[MICROCAP][BUY_CONDITION] Buy condition NOT met for {micro_symbol}. Skipping trade.")
                                 binance.log_trade("BUY", micro_symbol, qty, price, 0, "SKIPPED", "Buy condition not met", strategy="microcap")
                                 trade_results.append(("SKIPPED", qty))
-                            # --- END: Real buy/sell logic ---
                         except Exception as micro_e:
                             logger.exception(f"Error in Microcap trade for {micro.get('symbol', 'unknown')}: {micro_e}")
                 except Exception as e:
@@ -397,7 +440,15 @@ class ManagerAgent:
                 now_ts = datetime.datetime.utcnow()
                 if (now_ts - research_last_time).total_seconds() >= research_interval:
                     try:
+                        # core snapshot
                         snapshot = await core_research_agent.research_snapshot()
+                        self._latest_research[core_symbol] = snapshot
+                        # extended: futures symbols parallel
+                        fut_tasks = [agent.research_snapshot() for sym, agent in symbol_research_agents.items()]
+                        fut_results = await asyncio.gather(*fut_tasks, return_exceptions=True)
+                        for (sym, _agent), snap in zip(symbol_research_agents.items(), fut_results):
+                            if isinstance(snap, dict):
+                                self._latest_research[sym] = snap
                         strategy_manager.set_research_state(snapshot)
                         logger.info(f"[RESEARCH] Snapshot updated: macro_bias={snapshot.get('macro_bias')} sentiment={snapshot.get('sentiment_score')}")
                     except Exception as rse:
@@ -498,11 +549,25 @@ class ManagerAgent:
                             continue
                         position_scale = self.risk_manager.get_position_size()
                         
-                        # 🚨 EMERGENCY: Apply position size reduction
+                        # Funding adjustment
+                        try:
+                            metrics = futures_metrics_cache.get(sym)
+                            funding_rate = metrics.get('funding_rate')
+                            scale_fr = await funding_position_scale(sym, funding_rate)
+                            if scale_fr != 1.0:
+                                logger.info(f"[FUNDING_ADJUST] {sym} funding_rate={funding_rate} scale={scale_fr}")
+                                position_scale *= scale_fr
+                        except Exception as fe:
+                            logger.error(f"[FUNDING_ADJUST] {sym} error: {fe}")
+                        # Risk overlay scale (macro + metrics)
+                        overlay_scale = self._risk_overlay_scale(sym, metrics, self._latest_research.get(sym))
+                        if overlay_scale != 1.0:
+                            logger.info(f"[RISK_OVERLAY] {sym} overlay_scale={overlay_scale:.3f}")
+                            position_scale *= overlay_scale
                         emergency_scale = emergency_controls.adjust_position_size(position_scale)
                         final_position_scale = emergency_scale
                         
-                        logger.info(f"[EMERGENCY_POSITION] {sym}: Original scale={position_scale:.3f}, Emergency scale={final_position_scale:.3f}")
+                        logger.info(f"[EMERGENCY_POSITION] {sym}: Final scale={final_position_scale:.3f}")
                         
                         # Pass position_scale to submit_signal if supported, else scale target_qty/size in your signal logic
                         oe.submit_signal(sym, signal, price, atr=atr, position_scale=final_position_scale)

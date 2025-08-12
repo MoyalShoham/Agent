@@ -63,6 +63,21 @@ class StopLossConfig:
     max_concurrent_positions: int = 8     # Maximum positions to hold
     position_size_scaling: bool = True    # Scale down position sizes
     drawdown_protection: bool = True      # Reduce position sizes on drawdown
+    # New dynamic / performance config
+    atr_refresh_cycles: int = 5               # Recompute ATR every N cycles
+    kline_limit_full: int = 30                # Bars to fetch on ATR refresh
+    kline_limit_small: int = 10               # Bars to fetch on interim cycles (price only)
+    dynamic_atr: bool = True                  # Enable dynamic ATR multiplier
+    vol_high_threshold: float = 0.04          # >4% vol considered high
+    vol_low_threshold: float = 0.015          # <1.5% vol considered low
+    atr_multiplier_high_vol: float = 1.8      # Tighter in high vol
+    atr_multiplier_low_vol: float = 2.2       # Wider in low vol
+    trailing_min_profit_usd: float = 1.0      # Require at least $1 unrealized before trailing
+    gross_exposure_cap_usd: float | None = None  # Optional gross exposure cap
+    enable_mae_mfe_tracking: bool = True      # Track MAE/MFE
+    metrics_export_interval: int = 5          # Export metrics every N cycles
+    metrics_export_dir: str = 'logs'          # Directory for metrics snapshots
+    max_prefetch_workers: int = 6             # Future use for concurrency
 
 @dataclass 
 class StopLossSignal:
@@ -97,6 +112,8 @@ class EnhancedStopLoss:
             'loss_prevented': 0.0,
             'avg_stop_time': 0.0
         }
+        self.position_extremes: Dict[str, Dict[str, float]] = {}
+        self.cycle_count = 0
         
         logger.info("🛡️ Enhanced Stop Loss System initialized")
         if dry_run:
@@ -105,51 +122,93 @@ class EnhancedStopLoss:
     def initialize(self):
         """Initialize the stop loss system"""
         try:
-            # Initialize order execution
-            oe.initialize()
+            # Only initialize order execution if not already initialized (avoid wiping positions in another process)
+            if not getattr(oe, '_initialized', False):
+                oe.initialize()
             self.position_manager = oe._position_manager
-            
+
             if not getattr(settings, 'FUTURES_ENABLED', False):
                 logger.error("Futures trading not enabled")
                 return False
-                
+
             if not self.position_manager:
                 logger.error("Position manager not available")
                 return False
-            
+
             # Load active symbols
             symbols_str = getattr(settings, 'FUTURES_SYMBOLS', '')
             self.active_symbols = {s.strip().upper() for s in symbols_str.split(',') if s.strip()}
-            
+
+            # Populate positions from live exchange if they are empty (standalone run scenario)
+            try:
+                from trading_bot.exchange.binance_futures_gateway import BinanceFuturesGateway
+                # Reuse gateway from order_execution if present, else create a temp one
+                gateway = getattr(oe, '_gateway', None) or BinanceFuturesGateway()
+                live_positions = getattr(gateway, 'get_all_positions', lambda: [])()
+                updated = 0
+                for p in live_positions:
+                    try:
+                        amt = float(p.get('positionAmt', 0) or 0)
+                        if abs(amt) < 1e-12:
+                            continue
+                        sym = p.get('symbol')
+                        if sym not in self.active_symbols:
+                            continue
+                        entry_price = float(p.get('entryPrice', 0) or 0)
+                        pos_obj = self.position_manager.get_position(sym)
+                        # If currently flat in memory, set size/entry
+                        if abs(pos_obj.size) < 1e-12:
+                            pos_obj.size = amt
+                            pos_obj.entry_price = entry_price
+                            pos_obj.last_update = time.time()
+                            updated += 1
+                    except Exception:
+                        continue
+                if updated:
+                    logger.info(f"🔄 Imported {updated} live exchange positions into PositionManager for monitoring")
+            except Exception as imp_e:
+                logger.warning(f"[INIT] Could not import live positions: {imp_e}")
+
             logger.info(f"📊 Monitoring {len(self.active_symbols)} symbols")
             logger.info(f"🎯 Active symbols: {sorted(list(self.active_symbols))}")
-            
+
             return True
-            
         except Exception as e:
             logger.error(f"Failed to initialize stop loss system: {e}")
             return False
     
     def get_market_data(self, symbol: str) -> Tuple[float, float, float]:
-        """Get current price, ATR, and volatility for symbol"""
+        """Get current price, ATR, and volatility for symbol.
+        Returns (price, atr, volatility). If data cannot be fetched reliably, returns (None, None, None).
+        """
         try:
-            # Get current price
-            ticker = self.binance_client.get_ticker_price(symbol)
-            current_price = float(ticker['price'])
-            
-            # Get recent klines for ATR calculation
+            current_price = 0.0
+            # Prefer futures mark price via gateway if available
+            try:
+                from trading_bot.utils import order_execution as _oe_ref
+                gw = getattr(_oe_ref, '_gateway', None)
+                if gw and hasattr(gw, 'fetch_mark_price'):
+                    current_price = float(gw.fetch_mark_price(symbol)) or 0.0
+            except Exception:
+                pass
+            # Fallback to spot ticker
+            if current_price == 0.0 and hasattr(self.binance_client, 'get_price'):
+                px = self.binance_client.get_price(symbol)
+                if px is not None:
+                    current_price = float(px)
+            if current_price <= 0:
+                raise RuntimeError('price_unavailable')
+            # Fetch klines for ATR calc
             klines = self.binance_client.get_klines(symbol, interval='1h', limit=30)
+            if not klines or len(klines) < 15:  # need enough bars
+                raise RuntimeError('insufficient_klines')
             df = pd.DataFrame(klines, columns=[
                 'timestamp', 'open', 'high', 'low', 'close', 'volume',
                 'close_time', 'quote_asset_volume', 'number_of_trades',
                 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
             ])
-            
-            # Convert to numeric
             for col in ['high', 'low', 'close']:
                 df[col] = pd.to_numeric(df[col])
-            
-            # Calculate ATR
             df['tr'] = np.maximum(
                 df['high'] - df['low'],
                 np.maximum(
@@ -158,25 +217,25 @@ class EnhancedStopLoss:
                 )
             )
             atr = df['tr'].rolling(14).mean().iloc[-1]
-            
-            # Calculate volatility (20-period std)
             volatility = df['close'].pct_change().rolling(20).std().iloc[-1]
-            
-            # Cache the data
+            if pd.isna(atr) or atr <= 0:
+                raise RuntimeError('invalid_atr')
             self.price_cache[symbol] = current_price
-            self.volatility_cache[symbol] = volatility
-            
-            return current_price, atr, volatility
-            
+            self.volatility_cache[symbol] = volatility if not pd.isna(volatility) else 0.0
+            return current_price, atr, self.volatility_cache[symbol]
         except Exception as e:
-            logger.error(f"Failed to get market data for {symbol}: {e}")
-            # Return cached data if available
-            price = self.price_cache.get(symbol, 0.0)
-            return price, price * 0.01, 0.02  # Fallback values
-    
+            logger.warning(f"[DATA] Skipping {symbol} this cycle due to market data issue: {e}")
+            return None, None, None
+
     def calculate_atr_stop(self, position: Position, current_price: float, atr: float) -> float:
         """Calculate ATR-based stop loss price"""
         multiplier = self.config.atr_multiplier
+        if self.config.dynamic_atr:
+            vol = self.volatility_cache.get(position.symbol, 0.0)
+            if vol >= self.config.vol_high_threshold:
+                multiplier = self.config.atr_multiplier_high_vol
+            elif vol <= self.config.vol_low_threshold:
+                multiplier = self.config.atr_multiplier_low_vol
         
         # Adjust multiplier based on volatility
         volatility = self.volatility_cache.get(position.symbol, 0.02)
@@ -197,6 +256,9 @@ class EnhancedStopLoss:
             return None
         
         unrealized_pnl = position.unrealized_pnl(current_price)
+        # Dollar profit guard
+        if unrealized_pnl < self.config.trailing_min_profit_usd:
+            return None
         
         # Only trail if in profit above protection threshold
         if position.size > 0:  # Long position
@@ -247,6 +309,8 @@ class EnhancedStopLoss:
     
     def check_emergency_stops(self, position: Position, current_price: float) -> Optional[StopLossSignal]:
         """Check for emergency stop conditions"""
+        if current_price <= 0:
+            return None  # skip invalid price to avoid false 100% loss
         unrealized_pnl = position.unrealized_pnl(current_price)
         position_value = abs(position.size * position.entry_price)
         
@@ -305,49 +369,85 @@ class EnhancedStopLoss:
                     recommended_action='market_close'
                 ))
         
+        # Gross exposure cap handling
+        if self.config.gross_exposure_cap_usd is not None and self.config.gross_exposure_cap_usd > 0:
+            gross_exposure = 0.0
+            exposure_positions = []
+            for pos in self.position_manager.positions.values():
+                if abs(pos.size) > 1e-8:
+                    price = self.price_cache.get(pos.symbol, pos.entry_price)
+                    notional = abs(pos.size * price)
+                    gross_exposure += notional
+                    exposure_positions.append((pos, notional))
+            if gross_exposure > self.config.gross_exposure_cap_usd:
+                # Close largest losing positions first
+                losing = []
+                for pos, notional in exposure_positions:
+                    price = self.price_cache.get(pos.symbol, pos.entry_price)
+                    pnl = pos.unrealized_pnl(price)
+                    losing.append((pos, pnl, notional))
+                losing.sort(key=lambda x: (x[1], -x[2]))  # worst pnl then largest notional
+                to_reduce = gross_exposure - self.config.gross_exposure_cap_usd
+                for pos, pnl, notional in losing:
+                    if to_reduce <= 0:
+                        break
+                    signals.append(StopLossSignal(
+                        symbol=pos.symbol,
+                        action='close',
+                        reason=f'Gross exposure cap exceeded ({gross_exposure:.2f} > {self.config.gross_exposure_cap_usd:.2f}). Closing to reduce risk.',
+                        stop_price=0.0,
+                        urgency='high',
+                        position_size=pos.size,
+                        unrealized_pnl=pnl,
+                        recommended_action='market_close'
+                    ))
+                    to_reduce -= notional
+        
         return signals
+    
+    def update_position_extremes(self, symbol: str, unrealized_pnl: float):
+        """Track MAE/MFE for a symbol during lifetime of position."""
+        if not self.config.enable_mae_mfe_tracking:
+            return
+        ext = self.position_extremes.setdefault(symbol, {'MAE': 0.0, 'MFE': 0.0})
+        # MAE is most negative unrealized
+        ext['MAE'] = min(ext['MAE'], unrealized_pnl)
+        # MFE is most positive unrealized
+        ext['MFE'] = max(ext['MFE'], unrealized_pnl)
     
     def analyze_position(self, position: Position) -> List[StopLossSignal]:
         """Analyze a single position for stop loss conditions"""
         signals = []
-        
         if abs(position.size) < 1e-8:
             return signals
-        
-        # Skip if symbol not in active list
         if position.symbol not in self.active_symbols:
             logger.debug(f"Skipping {position.symbol} - not in active symbols")
             return signals
-        
         try:
-            # Get market data
             current_price, atr, volatility = self.get_market_data(position.symbol)
+            # Guard: skip if market data invalid to prevent false stops
+            if current_price is None or atr is None or current_price <= 0 or atr <= 0:
+                logger.debug(f"[SKIP] {position.symbol} market data unavailable (price={current_price}, atr={atr})")
+                return signals
             unrealized_pnl = position.unrealized_pnl(current_price)
-            
-            logger.debug(f"Analyzing {position.symbol}: size={position.size:.4f}, "
-                        f"entry={position.entry_price:.4f}, current={current_price:.4f}, "
-                        f"pnl={unrealized_pnl:.4f}")
-            
-            # 1. Emergency stops (highest priority)
+            self.update_position_extremes(position.symbol, unrealized_pnl)
+            logger.debug(
+                f"Analyzing {position.symbol}: size={position.size:.4f}, entry={position.entry_price:.4f}, "
+                f"current={current_price:.4f}, atr={atr:.6f}, pnl={unrealized_pnl:.4f}"
+            )
             emergency_signal = self.check_emergency_stops(position, current_price)
             if emergency_signal:
                 signals.append(emergency_signal)
-                return signals  # Emergency stops override everything
-            
-            # 2. Time-based stops
+                return signals
             time_signal = self.check_time_based_stops(position)
             if time_signal:
                 signals.append(time_signal)
-            
-            # 3. ATR-based stops
             atr_stop_price = self.calculate_atr_stop(position, current_price, atr)
             stop_triggered = False
-            
-            if position.size > 0:  # Long position
-                stop_triggered = current_price <= atr_stop_price
-            else:  # Short position
-                stop_triggered = current_price >= atr_stop_price
-            
+            if position.size > 0:
+                stop_triggered = current_price <= atr_stop_price and atr_stop_price > 0
+            else:
+                stop_triggered = current_price >= atr_stop_price and atr_stop_price > 0
             if stop_triggered:
                 signals.append(StopLossSignal(
                     symbol=position.symbol,
@@ -359,16 +459,13 @@ class EnhancedStopLoss:
                     unrealized_pnl=unrealized_pnl,
                     recommended_action='limit_close'
                 ))
-            
-            # 4. Trailing stops
             trailing_stop_price = self.calculate_trailing_stop(position, current_price)
             if trailing_stop_price:
                 trail_triggered = False
-                if position.size > 0:  # Long position
+                if position.size > 0:
                     trail_triggered = current_price <= trailing_stop_price
-                else:  # Short position
+                else:
                     trail_triggered = current_price >= trailing_stop_price
-                
                 if trail_triggered:
                     signals.append(StopLossSignal(
                         symbol=position.symbol,
@@ -380,10 +477,8 @@ class EnhancedStopLoss:
                         unrealized_pnl=unrealized_pnl,
                         recommended_action='limit_close'
                     ))
-            
         except Exception as e:
             logger.error(f"Error analyzing position {position.symbol}: {e}")
-        
         return signals
     
     def execute_stop_loss(self, signal: StopLossSignal) -> bool:
@@ -397,6 +492,11 @@ class EnhancedStopLoss:
             
             if abs(position.size) < 1e-8:
                 logger.warning(f"No position to close for {signal.symbol}")
+                return False
+            
+            # Prevent executing with bogus zero price derived stops
+            if signal.stop_price <= 0 and signal.urgency != 'emergency':
+                logger.warning(f"Skipping stop with invalid price for {signal.symbol}")
                 return False
             
             # Determine order side and quantity
@@ -453,6 +553,33 @@ class EnhancedStopLoss:
             logger.error(f"Failed to execute stop loss for {signal.symbol}: {e}")
             return False
     
+    def export_metrics(self):
+        """Export performance & position metrics periodically."""
+        try:
+            os.makedirs(self.config.metrics_export_dir, exist_ok=True)
+            snapshot = {
+                'timestamp': datetime.utcnow().isoformat(),
+                'cycle': self.cycle_count,
+                'performance_metrics': self.performance_metrics,
+                'position_extremes': self.position_extremes,
+                'open_positions': {}
+            }
+            for sym, pos in self.position_manager.positions.items():
+                if abs(pos.size) > 1e-8:
+                    price = self.price_cache.get(sym, pos.entry_price)
+                    snapshot['open_positions'][sym] = {
+                        'size': pos.size,
+                        'entry_price': pos.entry_price,
+                        'mark_price': price,
+                        'unrealized_pnl': pos.unrealized_pnl(price)
+                    }
+            path = os.path.join(self.config.metrics_export_dir, 'enhanced_stop_loss_metrics.jsonl')
+            with open(path, 'a') as f:
+                import json
+                f.write(json.dumps(snapshot) + "\n")
+        except Exception as e:
+            logger.warning(f"[METRICS] Failed to export metrics: {e}")
+    
     def run_stop_loss_check(self) -> Dict:
         """Run a complete stop loss check on all positions"""
         start_time = time.time()
@@ -507,6 +634,9 @@ class EnhancedStopLoss:
         logger.info(f"   🛑 Stops executed: {results['stops_executed']}")
         if results['errors'] > 0:
             logger.warning(f"   ❌ Errors: {results['errors']}")
+        
+        if self.config.metrics_export_interval > 0 and self.cycle_count % self.config.metrics_export_interval == 0:
+            self.export_metrics()
         
         return results
     

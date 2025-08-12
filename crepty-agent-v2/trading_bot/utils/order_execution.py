@@ -148,8 +148,20 @@ def submit_signal(symbol: str, signal: str, mark_price: float, atr: float | None
         return None
     side = 'BUY' if delta > 0 else 'SELL'
     order_qty = abs(delta)
-    # Final min notional check with current price
+    # Final min notional check with current price (attempt auto-upscale for fresh entries)
     notional = order_qty * mark_price
+    if min_notional and notional < min_notional and abs(pos.size) < 1e-9 and signal in ('buy','sell') and os.getenv('AUTO_UPSCALE_MIN_NOTIONAL','1') == '1':
+        if mark_price > 0:
+            needed_qty = min_notional / mark_price
+            # Respect leverage cap
+            max_qty_possible = (_position_manager.equity * settings.MAX_LEVERAGE) / mark_price if mark_price > 0 else 0
+            needed_qty = min(needed_qty, max_qty_possible)
+            if needed_qty > order_qty and needed_qty * mark_price >= min_notional * 0.999:
+                logging.info(f"[AUTO_UPSCALE] {symbol} qty {order_qty} -> {needed_qty} to reach minNotional {min_notional}")
+                order_qty = needed_qty
+                qty_target = order_qty if side == 'BUY' else -order_qty
+                delta = qty_target - pos.size
+                notional = order_qty * mark_price
     if min_notional and notional < min_notional:
         logging.debug(f"[SKIP] {symbol} order notional {notional:.4f} < min_notional {min_notional:.4f}")
         return None

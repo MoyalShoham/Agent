@@ -264,11 +264,21 @@ class EnhancedMLSignalGenerator:
         return k_percent, d_percent
 
     def _calculate_cci(self, high, low, close, window=20):
-        """Calculate Commodity Channel Index"""
-        tp = (high + low + close) / 3
-        sma = tp.rolling(window).mean()
-        mad = tp.rolling(window).apply(lambda x: pd.Series(x).mad())
-        return (tp - sma) / (0.015 * mad)
+        """Calculate Commodity Channel Index with manual MAD (pandas Series.mad removed in newer versions).
+        CCI = (TP - SMA(TP)) / (0.015 * MAD), where TP=(H+L+C)/3 and MAD is mean absolute deviation.
+        """
+        try:
+            tp = (high + low + close) / 3.0
+            sma = tp.rolling(window).mean()
+            # Manual mean absolute deviation over rolling window
+            mad = tp.rolling(window).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+            # Prevent division by zero
+            mad = mad.replace(0, np.nan)
+            cci = (tp - sma) / (0.015 * mad)
+            return cci
+        except Exception as e:
+            logger.error(f"CCI calculation failed: {e}")
+            return pd.Series(index=close.index, dtype=float)
 
     def _calculate_adx(self, high, low, close, window=14):
         """Calculate Average Directional Index"""

@@ -5,52 +5,51 @@ from loguru import logger
 from trading_bot.agents.manager_agent import ManagerAgent
 from trading_bot.config.settings import settings
 
-# Enhanced components
+# Keep AdvancedRiskManager (no global singleton defined)
 from trading_bot.risk.advanced_risk_manager import AdvancedRiskManager
-from trading_bot.risk.emergency_controls import EmergencyRiskControls
-from trading_bot.utils.ai_integration import AIModelIntegrator
-from trading_bot.utils.enhanced_websocket import EnhancedWebSocketClient
-from trading_bot.utils.ml_signals import EnhancedMLSignalGenerator
+
+# Replace duplicate instantiations with singleton imports
+# (These modules already create global instances at import time)
+try:
+    from trading_bot.utils.ai_integration import ai_integrator  # singleton
+    from trading_bot.risk.emergency_controls import emergency_controls  # singleton
+    from trading_bot.utils.enhanced_websocket import enhanced_ws_client  # singleton
+    from trading_bot.utils.ml_signals import _ml_generator as ml_signal_generator  # global instance
+except Exception as _imp_err:
+    logger.error(f"Singleton import error: {_imp_err}")
 
 load_dotenv()
 logging.basicConfig(level=getattr(settings, 'LOG_LEVEL', 'INFO'))
 
 def main():
     logger.info("🚀 Starting Enhanced Real-Time Crypto Trading Agent System...")
-    logger.info("🔧 Initializing advanced components...")
-    
-    # Initialize enhanced components
+    logger.info("🔧 Initializing components (singleton-aware)...")
+
+    # Initialize only what lacks a singleton
+    risk_manager = None
     try:
-        # Initialize AI integration
-        ai_integrator = AIModelIntegrator()
-        logger.info("✅ AI Model Integrator initialized")
-        
-        # Initialize advanced risk manager
         risk_manager = AdvancedRiskManager()
         logger.info("✅ Advanced Risk Manager initialized")
-        
-        # Initialize emergency controls
-        emergency_controls = EmergencyRiskControls()
-        logger.info("✅ Emergency Risk Controls initialized")
-        
-        # Initialize enhanced WebSocket client
-        ws_client = EnhancedWebSocketClient()
-        logger.info("✅ Enhanced WebSocket Client initialized")
-        
-        # Initialize enhanced ML signal generator
-        ml_signals = EnhancedMLSignalGenerator()
-        logger.info("✅ Enhanced ML Signal Generator initialized")
-        
-        logger.info("🎯 All enhanced components initialized successfully!")
-        
     except Exception as e:
-        logger.error(f"❌ Error initializing enhanced components: {e}")
-        logger.warning("🔄 Falling back to standard components...")
-    
-    # Original initialization logic
+        logger.error(f"❌ Advanced Risk Manager init failed: {e}")
+
+    # Log readiness of existing singletons (already constructed on import)
+    try:
+        if 'ai_integrator' in globals():
+            logger.info("✅ AI Model Integrator ready (singleton)")
+        if 'emergency_controls' in globals():
+            logger.info("✅ Emergency Risk Controls ready (singleton)")
+        if 'enhanced_ws_client' in globals():
+            logger.info("✅ Enhanced WebSocket Client ready (singleton)")
+        if 'ml_signal_generator' in globals():
+            logger.info("✅ Enhanced ML Signal Generator ready (singleton)")
+        logger.info("🎯 All core components available")
+    except Exception as e:
+        logger.error(f"❌ Component readiness logging failed: {e}")
+
     paper_trading = getattr(settings, 'PAPER_TRADING', True)
     mode = os.getenv('MODE', 'live' if not paper_trading else 'sim')
-    
+
     if settings.FUTURES_ENABLED:
         try:
             from trading_bot.utils.binance_client import BinanceClient
@@ -61,10 +60,9 @@ def main():
             logger.info(f"💰 Futures mode enabled. Initialized execution with equity={equity:.2f} USDT")
         except Exception as e:
             logger.exception(f"❌ Futures initialization failed: {e}")
-    
+
     manager = ManagerAgent()
-    
-    # Optionally, allow for backtest mode using the new backtest_portfolio_allocation
+
     if mode == 'backtest':
         from trading_bot.utils.binance_client import BinanceClient
         allocation = getattr(settings, 'PORTFOLIO_ALLOCATION', {

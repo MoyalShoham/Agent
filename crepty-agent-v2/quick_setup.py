@@ -142,7 +142,7 @@ def create_example_config():
 # Add these to your .env file:
 
 # ML Model Settings
-BYPASS_META=0
+BYPASS_META=1
 ML_MODEL_PATH=ml_model.pkl
 ML_CONFIDENCE_THRESHOLD=0.6
 ML_RETRAIN_INTERVAL=86400  # 24 hours

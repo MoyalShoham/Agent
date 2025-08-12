@@ -109,7 +109,10 @@ def process_once():
 
 
 def main():
+    logger.add("logs/run_stop_loss_structured_{time}.log", rotation="20 MB", retention="14 days", compression="zip", serialize=True)
     logger.add("run_stop_loss.log", rotation="5 MB", retention="5 days")
+    # Extra plain text log with timestamped filename
+    logger.add("logs/run_stop_loss_{time}.log", rotation="10 MB", retention="10 days")
     if LOOP_INTERVAL <= 0:
         process_once()
         return

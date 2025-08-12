@@ -259,6 +259,12 @@ class BinanceFuturesGateway(ExchangeGateway):
                 return p
         return {}
 
+    def get_all_positions(self) -> list[dict]:  # NEW helper
+        try:
+            return self._get('/fapi/v2/positionRisk', signed=True, params={})
+        except Exception:
+            return []
+
     def create_order(self, symbol: str, side: str, quantity: float, order_type: str = 'MARKET', price: Optional[float] = None, reduce_only: bool = False):
         params = {
             'symbol': symbol.upper(),
@@ -284,6 +290,17 @@ class BinanceFuturesGateway(ExchangeGateway):
     def fetch_funding_rate(self, symbol: str) -> float:
         data = self._get('/fapi/v1/premiumIndex', params={'symbol': symbol.upper()})
         return float(data.get('lastFundingRate', 0.0))
+
+    def fetch_mark_price(self, symbol: str) -> float:  # NEW helper
+        try:
+            data = self._get('/fapi/v1/premiumIndex', params={'symbol': symbol.upper()})
+            # markPrice preferred; fallback to lastPrice or indexPrice
+            for k in ('markPrice','lastPrice','indexPrice'):
+                if k in data:
+                    return float(data.get(k) or 0.0)
+            return 0.0
+        except Exception:
+            return 0.0
 
     def fetch_open_interest(self, symbol: str) -> float:
         data = self._get('/futures/data/openInterestHist', params={'symbol': symbol.upper(), 'period': '5m', 'limit': 1})
