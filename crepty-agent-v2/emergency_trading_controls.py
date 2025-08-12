@@ -26,7 +26,15 @@ class EmergencyTradingControls:
         self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSSES', '0.05'))
         self.max_open_positions = int(os.getenv('MAX_OPEN_POSITIONS', '5'))
         self.position_multiplier = float(os.getenv('AI_POSITION_SIZE_MULTIPLIER', '0.3'))
-    
+        # --- Auto confidence adaptation settings ---
+        self.auto_lower_enabled = os.getenv('AI_CONFIDENCE_AUTO_LOWER', '0') == '1'
+        self.idle_minutes = int(os.getenv('AI_CONFIDENCE_IDLE_MINUTES', '60'))  # minutes with no trades before lowering
+        self.lower_step = float(os.getenv('AI_CONFIDENCE_STEP', '5'))  # if percent mode else 0.05
+        self.min_floor = float(os.getenv('AI_CONFIDENCE_MIN_FLOOR', '25'))  # percent floor (or 0.25 if fractional)
+        self.restore_on_trade = os.getenv('AI_CONFIDENCE_RESTORE_ON_TRADE', '1') == '1'
+        self._baseline_min_confidence = self.min_confidence
+        self._last_any_trade_time = datetime.now()
+
     def load_state(self):
         """Load trading state"""
         self.last_trades = {}
@@ -59,6 +67,8 @@ class EmergencyTradingControls:
     def should_allow_trade(self, symbol: str, signal_confidence: float = 0) -> tuple[bool, str]:
         """Emergency check if trade should be allowed.
         signal_confidence passed in should match scale of self.min_confidence (auto handled by caller)."""
+        # Auto-lower logic (before evaluation)
+        self._maybe_auto_lower_threshold()
         now = datetime.now()
         today = now.strftime('%Y-%m-%d')
         # Normalize: if min_confidence > 1 treat as percent values
@@ -108,9 +118,35 @@ class EmergencyTradingControls:
             self.daily_pnl[today] = 0.0
         self.daily_pnl[today] += pnl
         
+        # Track last any trade time
+        self._last_any_trade_time = now
+        # Optionally restore baseline after a trade (activity resumed)
+        if self.auto_lower_enabled and self.restore_on_trade and self.min_confidence != self._baseline_min_confidence:
+            self.min_confidence = self._baseline_min_confidence
+            print(f"[AUTO_CONF] Restored confidence threshold to baseline {self.min_confidence}")
+        
         self.save_state()
         
         print(f"🚨 EMERGENCY: Trade recorded {symbol} {signal} PnL:{pnl:.6f} Daily:{self.daily_pnl[today]:.6f}")
+    
+    def _maybe_auto_lower_threshold(self):
+        """Lower confidence threshold gradually if no trades have occurred for idle_minutes.
+        Supports percent or fractional scale automatically.
+        """
+        if not self.auto_lower_enabled:
+            return
+        now = datetime.now()
+        idle_delta = now - getattr(self, '_last_any_trade_time', now)
+        if idle_delta < timedelta(minutes=self.idle_minutes):
+            return
+        # Determine mode
+        percent_mode = self._baseline_min_confidence > 1
+        step = self.lower_step if percent_mode else (self.lower_step / 100.0 if self.lower_step > 1 else self.lower_step)
+        floor = self.min_floor if percent_mode else (self.min_floor / 100.0 if self.min_floor > 1 else self.min_floor)
+        if self.min_confidence > floor:
+            old = self.min_confidence
+            self.min_confidence = max(floor, self.min_confidence - step)
+            print(f"[AUTO_CONF] Lowered confidence threshold {old} -> {self.min_confidence} after {idle_delta.total_seconds()/60:.1f}m idle")
     
     def adjust_position_size(self, original_size: float) -> float:
         """Apply emergency position size reduction"""

@@ -5,6 +5,7 @@ Optimizes position sizes based on signal strength, risk factors, and market cond
 from typing import Dict, Any, Optional
 from loguru import logger
 import os
+import asyncio
 
 try:
     from .openai_client import OpenAIClient
@@ -211,7 +212,9 @@ class AIPositionSizer:
         """
         
         try:
-            ai_response = await self.openai.ask_json(prompt)
+            # Offload synchronous OpenAI client call to executor to avoid improper await errors
+            loop = asyncio.get_running_loop()
+            ai_response = await loop.run_in_executor(None, self.openai.ask_json, prompt)
             
             if not ai_response:
                 return self._get_default_ai_response()

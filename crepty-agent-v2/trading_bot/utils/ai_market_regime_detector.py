@@ -7,6 +7,7 @@ from loguru import logger
 import pandas as pd
 import numpy as np
 import os
+import asyncio
 
 try:
     from .openai_client import OpenAIClient
@@ -205,7 +206,9 @@ class AIMarketRegimeDetector:
         """
         
         try:
-            ai_response = await self.openai.ask_json(prompt)
+            # Offload synchronous OpenAI call to executor to prevent await of non-awaitable
+            loop = asyncio.get_running_loop()
+            ai_response = await loop.run_in_executor(None, self.openai.ask_json, prompt)
             
             if not ai_response:
                 return self._get_default_ai_response()
