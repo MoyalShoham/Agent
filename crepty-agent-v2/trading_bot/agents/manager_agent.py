@@ -11,6 +11,8 @@ from trading_bot.utils.smart_order_router import SmartOrderRouter
 from trading_bot.utils.sentiment import fetch_sentiment
 from trading_bot.utils.notifications import send_notification
 from trading_bot.utils.ml_signals import generate_ml_signal
+from trading_bot.utils.ai_enhanced_ml_signals import generate_ai_enhanced_ml_signal
+from trading_bot.utils.ai_position_sizer import calculate_ai_position_size
 import importlib
 import os
 import csv
@@ -252,9 +254,59 @@ class ManagerAgent:
                             except Exception as e:
                                 logger.exception(f"[MICROCAP] Error fetching latest price for {micro_symbol}: {e}")
                                 continue
-                            # Calculate qty to try to meet minNotional (with 15% buffer)
+                            # Calculate qty to try to meet minNotional (with 15% buffer) - OLD METHOD
+                            # min_notional_buffer = min_notional * 1.15 if min_notional else 0
+                            # qty = (usdt_balance * 0.5) / price if price > 0 else 0
+                            
+                            # NEW: AI-Enhanced Position Sizing
                             min_notional_buffer = min_notional * 1.15 if min_notional else 0
-                            qty = (usdt_balance * 0.5) / price if price > 0 else 0
+                            
+                            # Prepare portfolio state for AI position sizer
+                            try:
+                                current_positions = binance.get_spot_positions() if hasattr(binance, 'get_spot_positions') else {}
+                                portfolio_state = {
+                                    'positions': current_positions,
+                                    'max_positions': 8,  # From your configuration
+                                    'current_drawdown': 0.0  # You may want to track this
+                                }
+                                
+                                # Market context from enhanced ML analysis
+                                market_context = {
+                                    'market_regime': enhanced_ml_result.get('market_regime', 'unknown'),
+                                    'volatility': 'high' if enhanced_ml_result.get('risk_score', 0.5) > 0.7 else 'medium',
+                                    'correlation_risk': 'medium',
+                                    'liquidity': 'good'
+                                }
+                                
+                                # Get AI-optimized position size
+                                ai_position = await calculate_ai_position_size(
+                                    symbol=micro_symbol,
+                                    signal_strength=ml_signal,
+                                    signal_confidence=ml_confidence,
+                                    current_price=price,
+                                    available_capital=usdt_balance,
+                                    portfolio_state=portfolio_state,
+                                    market_context=market_context
+                                )
+                                
+                                # Use AI-recommended quantity
+                                qty = ai_position['quantity']
+                                
+                                # Log AI position sizing decision
+                                logger.info(f"[MICROCAP][AI_POSITION] symbol={micro_symbol}")
+                                logger.info(f"  AI Position Size: ${ai_position['position_size_usd']:.2f} ({ai_position['position_size_pct']:.1%})")
+                                logger.info(f"  Quantity: {qty:.6f}")
+                                logger.info(f"  Stop Loss: {ai_position['stop_loss_pct']:.1%} @ ${ai_position['stop_loss_price']:.4f}")
+                                logger.info(f"  Take Profit: {ai_position['take_profit_pct']:.1%} @ ${ai_position['take_profit_price']:.4f}")
+                                logger.info(f"  Reasoning: {ai_position['reasoning']}")
+                                logger.info(f"  Risk Factors: {ai_position['risk_factors']}")
+                                
+                            except Exception as pos_e:
+                                logger.error(f"[MICROCAP] AI position sizing failed for {micro_symbol}: {pos_e}")
+                                # Fallback to original method
+                                qty = (usdt_balance * 0.02) / price if price > 0 else 0  # Conservative 2% fallback
+                            
+                            # Apply exchange constraints
                             if step_size > 0:
                                 qty = qty - (qty % step_size)
                             qty = max(qty, min_qty)
@@ -271,13 +323,22 @@ class ManagerAgent:
                                     notional_blacklist.add(micro_symbol)
                                     logger.info(f"[MICROCAP] Blacklisted {micro_symbol} after repeated NOTIONAL failures.")
                                 continue
-                            # --- BEGIN: Real buy/sell logic using agent/layer signals ---
-                            # Example: Use analysis_agent, ML signals, and research_agent for decision
+                            # --- BEGIN: Real buy/sell logic using enhanced AI+ML signals ---
+                            # Get historical price data for AI-enhanced ML analysis
                             try:
-                                # Get ML/ensemble signal (e.g., 1=buy, -1=sell, 0=hold)
-                                ml_signal = generate_ml_signal(micro_symbol)
+                                price_data = binance.get_ohlcv_dataframe(micro_symbol, interval='1h', limit=100)
+                            except Exception as e:
+                                logger.warning(f"[MICROCAP] Could not fetch OHLCV data for {micro_symbol}: {e}")
+                                price_data = None
+                            
+                            try:
+                                # Get AI-enhanced ML signal with comprehensive analysis
+                                enhanced_ml_result = await generate_ai_enhanced_ml_signal(micro_symbol, price_data)
+                                ml_signal = enhanced_ml_result.get("enhanced_signal", 0)
+                                ml_confidence = enhanced_ml_result.get("confidence", 0.5)
+                                
+                                # Get standard analysis and research signals
                                 analysis_signal = await analysis_agent.analyze(market_data)
-                                # Convert analysis_signal to int using new schema key 'action' (fallback to legacy 'recommendation')
                                 analysis_action_raw = (analysis_signal.get('action') or analysis_signal.get('recommendation') or '').lower()
                                 if analysis_action_raw.startswith('buy'):
                                     analysis_signal_int = 1
@@ -285,17 +346,30 @@ class ManagerAgent:
                                     analysis_signal_int = -1
                                 else:
                                     analysis_signal_int = 0
+                                
                                 research_signal = await research_agent.research(market_data)
-                                # Log all signal integer values
-                                logger.info(f"[MICROCAP][SIGNALS_INT] symbol={micro_symbol}, ml_signal={ml_signal}, analysis_signal_int={analysis_signal_int}, research_signal={research_signal}")
-                                logger.info(f"[MICROCAP][SIGNALS] symbol={micro_symbol}, ml_signal={ml_signal}, analysis_action={analysis_action_raw}, analysis_signal={analysis_signal}, research_signal={research_signal}")
-                                # Buy condition: all 3 signals agree on buy, or 2 out of 3 if relaxed
+                                
+                                # Enhanced logging with AI insights
+                                logger.info(f"[MICROCAP][AI_ENHANCED_SIGNALS] symbol={micro_symbol}")
+                                logger.info(f"  ML Signal: {ml_signal} (confidence: {ml_confidence:.2f})")
+                                logger.info(f"  AI Analysis: {enhanced_ml_result.get('reasoning', 'N/A')}")
+                                logger.info(f"  Market Regime: {enhanced_ml_result.get('market_regime', 'unknown')}")
+                                logger.info(f"  Risk Factors: {enhanced_ml_result.get('risk_factors', [])}")
+                                logger.info(f"  Analysis Signal: {analysis_signal_int} ({analysis_action_raw})")
+                                logger.info(f"  Research Signal: {research_signal}")
+                                
+                                # Enhanced buy condition with confidence weighting
                                 if require_all_signals:
-                                    buy_condition_met = (ml_signal == 1 and analysis_signal_int == 1 and research_signal == 1)
+                                    # All signals must agree AND ML confidence must be > 0.6
+                                    buy_condition_met = (ml_signal == 1 and analysis_signal_int == 1 and research_signal == 1 and ml_confidence > 0.6)
                                 else:
-                                    buy_condition_met = (sum([ml_signal == 1, analysis_signal_int == 1, research_signal == 1]) >= 2)
+                                    # 2 out of 3 signals agree OR high-confidence ML signal (>0.8) with 1 other signal
+                                    standard_consensus = sum([ml_signal == 1, analysis_signal_int == 1, research_signal == 1]) >= 2
+                                    high_confidence_ml = (ml_signal == 1 and ml_confidence > 0.8 and (analysis_signal_int == 1 or research_signal == 1))
+                                    buy_condition_met = standard_consensus or high_confidence_ml
+                                
                             except Exception as sig_e:
-                                logger.error(f"[MICROCAP][SIGNALS] Error fetching signals for {micro_symbol}: {sig_e}")
+                                logger.error(f"[MICROCAP][SIGNALS] Error fetching enhanced signals for {micro_symbol}: {sig_e}")
                                 buy_condition_met = False
                             logger.info(f"[MICROCAP][BUY_CONDITION] symbol={micro_symbol}, price={price}, qty={qty}, notional={notional}, min_notional_buffer={min_notional_buffer}, market_data={market_data}, buy_condition_met={buy_condition_met}")
                             if buy_condition_met:
@@ -333,6 +407,9 @@ class ManagerAgent:
                 pass
             # Consensus-based futures execution (every loop on core symbols)
             try:
+                # Import emergency controls
+                from emergency_trading_controls import emergency_controls
+                
                 for sym in futures_symbols:
                     try:
                         # Fetch full kline data for ATR (OHLC)
@@ -365,6 +442,31 @@ class ManagerAgent:
                         # Pass close-only dataframe to strategy manager (some strategies expect high/low present so keep them)
                         strat_df = df[['open','high','low','close']].copy()
                         signal = strategy_manager.consensus_signal(strat_df)
+                        
+                        # 🚨 EMERGENCY: Get enhanced ML signal with confidence
+                        try:
+                            enhanced_ml_result = await generate_ai_enhanced_ml_signal(
+                                symbol=sym,
+                                price_data=strat_df
+                            )
+                            ml_confidence = enhanced_ml_result.get('confidence', 0)
+                            ai_signal = enhanced_ml_result.get('ai_signal', 'hold')
+                            
+                            # Convert to numeric for consensus
+                            signal_confidence = ml_confidence * 100  # Convert to percentage
+                            
+                            logger.info(f"[EMERGENCY_SIGNAL] {sym}: ML confidence={signal_confidence:.1f}%, AI signal={ai_signal}")
+                        except Exception as ml_err:
+                            logger.error(f"[EMERGENCY_SIGNAL] {sym} ML error: {ml_err}")
+                            signal_confidence = 0
+                            ai_signal = 'hold'
+                        
+                        # 🚨 EMERGENCY: Check if trade is allowed
+                        trade_allowed, reason = emergency_controls.should_allow_trade(sym, signal_confidence)
+                        if not trade_allowed:
+                            logger.warning(f"[EMERGENCY_BLOCK] {sym}: {reason}")
+                            continue
+                        
                         from trading_bot.utils import order_execution as oe
                         pos_before = oe._position_manager.get_position(sym).size if oe._position_manager else 0.0
                         # --- Risk Management: check if trade is allowed and adjust position size ---
@@ -372,8 +474,22 @@ class ManagerAgent:
                             logger.warning(f"[RISK] Trade blocked for {sym} due to excessive drawdown.")
                             continue
                         position_scale = self.risk_manager.get_position_size()
+                        
+                        # 🚨 EMERGENCY: Apply position size reduction
+                        emergency_scale = emergency_controls.adjust_position_size(position_scale)
+                        final_position_scale = emergency_scale
+                        
+                        logger.info(f"[EMERGENCY_POSITION] {sym}: Original scale={position_scale:.3f}, Emergency scale={final_position_scale:.3f}")
+                        
                         # Pass position_scale to submit_signal if supported, else scale target_qty/size in your signal logic
-                        oe.submit_signal(sym, signal, price, atr=atr, position_scale=position_scale)
+                        oe.submit_signal(sym, signal, price, atr=atr, position_scale=final_position_scale)
+                        
+                        # 🚨 EMERGENCY: Record trade if position changed
+                        pos_after = oe._position_manager.get_position(sym).size if oe._position_manager else 0.0
+                        if abs(pos_after - pos_before) > 0.001:  # Position changed
+                            trade_signal = 'buy' if pos_after > pos_before else 'sell'
+                            emergency_controls.record_trade(sym, trade_signal, 0)  # PnL will be updated later
+                        
                         # NEW: invoke risk management (trailing stop / partial TP)
                         try:
                             oe.manage_positions(sym, price, atr=atr)
@@ -381,6 +497,13 @@ class ManagerAgent:
                             logger.error(f"[RISK_MANAGE] {sym} manage_positions error: {rm_err}")
                     except Exception as es:
                         logger.error(f"[FUTURES_EXEC] {sym} error: {es}")
+                
+                # 🚨 EMERGENCY: Log status every loop
+                try:
+                    status = emergency_controls.get_status()
+                    logger.info(f"[EMERGENCY_STATUS] Daily PnL: {status['daily_pnl']:.6f}, Active cooldowns: {status['active_cooldowns']}")
+                except Exception as status_err:
+                    logger.error(f"[EMERGENCY_STATUS] Error: {status_err}")
                 # Snapshot code remains below
                 try:
                     if (datetime.datetime.utcnow() - last_snapshot_time).total_seconds() > 300:

@@ -266,6 +266,36 @@ class BinanceClient:
             return closes
         except Exception as e:
             raise RuntimeError(f"Binance historical price fetch error: {e}")
+    
+    def get_ohlcv_dataframe(self, symbol: str, interval: str = '1h', limit: int = 100):
+        """Get OHLCV data as pandas DataFrame for ML analysis"""
+        try:
+            import pandas as pd
+            from datetime import datetime
+            
+            klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+            
+            data = []
+            for k in klines:
+                data.append({
+                    'timestamp': datetime.fromtimestamp(k[0] / 1000),
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5])
+                })
+            
+            df = pd.DataFrame(data)
+            df.set_index('timestamp', inplace=True)
+            return df
+            
+        except ImportError:
+            logging.error("pandas not available for DataFrame creation")
+            return None
+        except Exception as e:
+            logging.error(f"Error getting OHLCV dataframe for {symbol}: {e}")
+            return None
 
     def simple_moving_average(self, prices, window=14):
         if len(prices) < window:

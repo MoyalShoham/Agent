@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""
+Emergency Trading Patch - Adds immediate position and signal controls
+"""
+
+import os
+import json
+from datetime import datetime, timedelta
+
+class EmergencyTradingControls:
+    """Emergency controls to prevent overtrading and losses"""
+    
+    def __init__(self):
+        self.last_trades_file = 'emergency_last_trades.json'
+        self.daily_pnl_file = 'emergency_daily_pnl.json'
+        self.load_state()
+        
+        # Emergency settings from .env
+        self.min_confidence = float(os.getenv('AI_SIGNAL_CONFIDENCE_THRESHOLD', '85'))
+        self.min_trade_interval = int(os.getenv('MIN_TRADE_INTERVAL_MINUTES', '15'))
+        self.cooldown_period = int(os.getenv('COOLDOWN_PERIOD_MINUTES', '30'))
+        self.max_daily_loss = float(os.getenv('MAX_DAILY_LOSSES', '0.05'))
+        self.max_open_positions = int(os.getenv('MAX_OPEN_POSITIONS', '5'))
+        self.position_multiplier = float(os.getenv('AI_POSITION_SIZE_MULTIPLIER', '0.3'))
+    
+    def load_state(self):
+        """Load trading state"""
+        self.last_trades = {}
+        self.daily_pnl = {}
+        
+        try:
+            if os.path.exists(self.last_trades_file):
+                with open(self.last_trades_file, 'r') as f:
+                    self.last_trades = json.load(f)
+        except:
+            self.last_trades = {}
+            
+        try:
+            if os.path.exists(self.daily_pnl_file):
+                with open(self.daily_pnl_file, 'r') as f:
+                    self.daily_pnl = json.load(f)
+        except:
+            self.daily_pnl = {}
+    
+    def save_state(self):
+        """Save trading state"""
+        try:
+            with open(self.last_trades_file, 'w') as f:
+                json.dump(self.last_trades, f)
+            with open(self.daily_pnl_file, 'w') as f:
+                json.dump(self.daily_pnl, f)
+        except Exception as e:
+            print(f"Error saving emergency state: {e}")
+    
+    def should_allow_trade(self, symbol: str, signal_confidence: float = 0) -> tuple[bool, str]:
+        """Emergency check if trade should be allowed"""
+        now = datetime.now()
+        today = now.strftime('%Y-%m-%d')
+        
+        # 1. Check signal confidence threshold
+        if signal_confidence < self.min_confidence:
+            return False, f"Signal confidence {signal_confidence:.1f}% < required {self.min_confidence}%"
+        
+        # 2. Check minimum trade interval
+        if symbol in self.last_trades:
+            last_trade_time = datetime.fromisoformat(self.last_trades[symbol])
+            if now < last_trade_time + timedelta(minutes=self.min_trade_interval):
+                remaining = (last_trade_time + timedelta(minutes=self.min_trade_interval) - now).total_seconds() / 60
+                return False, f"Min trade interval: {remaining:.1f}min remaining"
+        
+        # 3. Check cooldown period
+        cooldown_key = f"{symbol}_cooldown"
+        if cooldown_key in self.last_trades:
+            cooldown_time = datetime.fromisoformat(self.last_trades[cooldown_key])
+            if now < cooldown_time + timedelta(minutes=self.cooldown_period):
+                remaining = (cooldown_time + timedelta(minutes=self.cooldown_period) - now).total_seconds() / 60
+                return False, f"Cooldown: {remaining:.1f}min remaining"
+        
+        # 4. Check daily loss limit
+        if today in self.daily_pnl and self.daily_pnl[today] < -self.max_daily_loss:
+            return False, f"Daily loss limit exceeded: {self.daily_pnl[today]:.4f}"
+        
+        return True, "ALLOWED"
+    
+    def record_trade(self, symbol: str, signal: str, pnl: float = 0):
+        """Record trade for tracking"""
+        now = datetime.now()
+        today = now.strftime('%Y-%m-%d')
+        
+        # Record last trade time
+        self.last_trades[symbol] = now.isoformat()
+        
+        # If position was closed, set cooldown
+        if signal in ['close', 'sell'] and pnl != 0:
+            self.last_trades[f"{symbol}_cooldown"] = now.isoformat()
+        
+        # Update daily PnL
+        if today not in self.daily_pnl:
+            self.daily_pnl[today] = 0.0
+        self.daily_pnl[today] += pnl
+        
+        self.save_state()
+        
+        print(f"🚨 EMERGENCY: Trade recorded {symbol} {signal} PnL:{pnl:.6f} Daily:{self.daily_pnl[today]:.6f}")
+    
+    def adjust_position_size(self, original_size: float) -> float:
+        """Apply emergency position size reduction"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Base reduction
+        adjusted_size = original_size * self.position_multiplier
+        
+        # Additional reduction based on daily losses
+        if today in self.daily_pnl:
+            daily_loss = self.daily_pnl[today]
+            if daily_loss < -0.02:  # If daily loss > 2%
+                adjusted_size *= 0.5  # Further 50% reduction
+            elif daily_loss < -0.01:  # If daily loss > 1%
+                adjusted_size *= 0.75  # 25% reduction
+        
+        return adjusted_size
+    
+    def get_status(self) -> dict:
+        """Get emergency control status"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        return {
+            'daily_pnl': self.daily_pnl.get(today, 0.0),
+            'max_daily_loss': self.max_daily_loss,
+            'position_multiplier': self.position_multiplier,
+            'min_confidence': self.min_confidence,
+            'active_cooldowns': len([k for k in self.last_trades.keys() if '_cooldown' in k])
+        }
+
+# Global instance
+emergency_controls = EmergencyTradingControls()
