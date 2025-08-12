@@ -1,4 +1,5 @@
 from trading_bot.utils.risk_monitor import RiskMonitor
+from trading_bot.utils.event_bus import subscribe
 
 import asyncio
 import logging
@@ -10,11 +11,91 @@ from trading_bot.utils.smart_order_router import SmartOrderRouter
 from trading_bot.utils.sentiment import fetch_sentiment
 from trading_bot.utils.notifications import send_notification
 from trading_bot.utils.ml_signals import generate_ml_signal
+from trading_bot.utils.ai_enhanced_ml_signals import generate_ai_enhanced_ml_signal
+from trading_bot.utils.ai_position_sizer import calculate_ai_position_size
 import importlib
 import os
-
+import csv
+from datetime import datetime
+# --- NEW: external funding scaling helper ---
+from trading_bot.utils.external_data import funding_position_scale  # added
+from trading_bot.utils.futures_metrics import futures_metrics_cache  # NEW
 
 class ManagerAgent:
+    def __init__(self):
+        """Initialize registry and state used inside run().
+        Adds back previously referenced attributes (register_agent, symbols, daily_loss, continuous_learning).
+        """
+        self.agents = {}
+        self.daily_loss = 0.0
+        # Core symbols list (used to exclude when scanning microcaps); fallback to common majors
+        try:
+            from trading_bot.config.settings import settings as _settings
+            self.symbols = [s.strip().upper() for s in getattr(_settings, 'FUTURES_SYMBOLS', 'BTCUSDT,ETHUSDT').split(',')]
+        except Exception:
+            self.symbols = ['BTCUSDT','ETHUSDT']
+        # Continuous learning module wrapper
+        try:
+            import trading_bot.utils.continuous_learning as _cl
+            self.continuous_learning = _cl
+        except Exception:
+            self.continuous_learning = None
+        # Placeholder risk monitor values
+        self.max_daily_loss = getattr(_settings, 'MAX_DAILY_LOSS', 0) if ' _settings' in locals() else 0
+        self.current_loss = 0.0
+        # --- Risk Management Layer ---
+        from trading_bot.risk.risk_manager import RiskManager
+        self.risk_manager = RiskManager(max_drawdown=0.10, window=50, min_position=0.2, default_position=1.0)
+        # cache latest research snapshots per symbol
+        self._latest_research: dict[str, dict] = {}
+        self._last_metrics_persist = None
+        self._metrics_file = 'futures_metrics.csv'
+        if not os.path.exists(self._metrics_file):
+            try:
+                with open(self._metrics_file, 'w', newline='') as f:
+                    csv.writer(f).writerow(['timestamp','symbol','open_interest','open_interest_change_pct','long_short_ratio','basis','funding_rate','liquidation_pressure'])
+            except Exception:
+                pass
+
+    def register_agent(self, name: str, agent):
+        """Register an agent object by name."""
+        self.agents[name] = agent
+        try:
+            logger.info(f"Registered agent: {name}")
+        except Exception:
+            pass
+
+    async def _persist_metrics(self, symbol: str, metrics: dict):
+        try:
+            with open(self._metrics_file, 'a', newline='') as f:
+                csv.writer(f).writerow([
+                    datetime.utcnow().isoformat(),
+                    symbol,
+                    metrics.get('open_interest'),
+                    f"{metrics.get('open_interest_change_pct', ''):.6f}" if metrics.get('open_interest_change_pct') is not None else '',
+                    metrics.get('long_short_ratio'),
+                    f"{metrics.get('basis', ''):.6f}" if metrics.get('basis') is not None else '',
+                    f"{metrics.get('funding_rate', ''):.6f}" if metrics.get('funding_rate') is not None else '',
+                    metrics.get('liquidation_pressure')
+                ])
+        except Exception as e:
+            logger.error(f"Metrics persist error: {e}")
+
+    def _risk_overlay_scale(self, symbol: str, metrics: dict, research: dict | None) -> float:
+        try:
+            oi_change = metrics.get('open_interest_change_pct') or 0
+            basis = metrics.get('basis') or 0
+            lsr = metrics.get('long_short_ratio') or 1
+            macro_bias = (research or {}).get('macro_bias') if isinstance(research, dict) else None
+            scale = 1.0
+            if macro_bias == 'bearish' and oi_change > settings.OPEN_INTEREST_RISE_THRESHOLD and basis > settings.BASIS_POSITIVE_THRESHOLD:
+                scale *= settings.RISK_OVERLAY_REDUCTION
+            if macro_bias == 'bullish' and oi_change > settings.OPEN_INTEREST_RISE_THRESHOLD and lsr > settings.LONG_SHORT_EXTREME:
+                scale *= settings.RISK_OVERLAY_EXPANSION
+            return scale
+        except Exception as e:
+            logger.error(f"risk overlay error {symbol}: {e}")
+            return 1.0
 
     async def run(self):
         import datetime
@@ -27,6 +108,75 @@ class ManagerAgent:
         analysis_agent = AnalysisAgent()
         binance = BinanceClient()
         self.register_agent("analysis", analysis_agent)
+        futures_symbols = [s.strip().upper() for s in getattr(settings, 'FUTURES_SYMBOLS', 'BTCUSDT,ETHUSDT').split(',')]
+        # Filter out futures symbols not supported by current futures gateway (prevents -1121)
+        try:
+            from trading_bot.utils import order_execution as _oe
+            if _oe._gateway and hasattr(_oe._gateway, '_symbol_filters'):
+                supported = set(_oe._gateway._symbol_filters.keys())
+                original = list(futures_symbols)
+                futures_symbols = [s for s in futures_symbols if s in supported]
+                removed = set(original) - set(futures_symbols)
+                if removed:
+                    logger.warning(f"Removed unsupported futures symbols: {removed}")
+        except Exception as _ferr:
+            logger.debug(f"Futures symbol filter skip: {_ferr}")
+        core_symbol = futures_symbols[0] if futures_symbols else 'BTCUSDT'
+        core_research_agent = ResearchAgent(core_symbol)
+        research_last_time = datetime.datetime.utcnow()
+        research_interval = 300
+        # NEW: launch per-symbol research tasks for futures
+        symbol_research_agents = {sym: ResearchAgent(sym) for sym in futures_symbols}
+
+        # Prepare secondary CSV log file
+        csv_path = 'futures_trades_log.csv'
+        if not os.path.exists(csv_path):
+            with open(csv_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['timestamp','symbol','signal','price','atr','target_qty','prev_pos','new_pos','side','order_id','realized_pnl','simulated'])
+
+        def append_csv(row):
+            try:
+                with open(csv_path, 'a', newline='') as f:
+                    csv.writer(f).writerow(row)
+            except Exception as e:
+                logger.error(f"CSV log write error: {e}")
+
+        # Event-driven logging for fills
+        def on_order_filled(ev):
+            try:
+                append_csv([
+                    datetime.datetime.utcnow().isoformat(),
+                    ev.get('symbol'),
+                    ev.get('signal',''),
+                    ev.get('price'),
+                    ev.get('atr'),  # fixed missing parenthesis
+                    ev.get('target_qty'),
+                    ev.get('prev_pos'),
+                    ev.get('new_pos'),
+                    ev.get('side',''),
+                    ev.get('order_id', ''),
+                    ev.get('realized_pnl',''),
+                    ev.get('simulated', False)
+                ])
+                try:
+                    pnl = float(ev.get('realized_pnl', 0) or 0)
+                    self.risk_manager.update(pnl)
+                except Exception as rme:
+                    logger.error(f"RiskManager update error: {rme}")
+            except Exception as e:
+                logger.error(f"on_order_filled log error: {e}")
+        subscribe('ORDER_FILLED', on_order_filled)
+
+        # Snapshot tracking
+        last_snapshot_time = datetime.datetime.utcnow()
+        snapshot_path = 'futures_snapshots.csv'
+        if not os.path.exists(snapshot_path):
+            try:
+                with open(snapshot_path, 'w', newline='') as f:
+                    csv.writer(f).writerow(['timestamp','symbol','position_size','entry_price','realized_pnl','equity'])
+            except Exception as e:
+                logger.error(f"Snapshot file init error: {e}")
 
         last_pnl_check = datetime.datetime.utcnow().date()
         hot_coin_check_counter = 0
@@ -73,218 +223,399 @@ class ManagerAgent:
                 self.daily_loss = 0.0
                 last_pnl_check = now
 
-            # ...existing code for research, summary, allocation, etc...
-
-            # --- Microcap strategy with valid symbol filtering ---
-            try:
-                all_tickers = binance.client.get_ticker()
-                # Only consider microcaps with nonzero price/volume, valid spot symbol, and not a stablecoin-to-stablecoin pair
-                def is_stable_pair(symbol):
-                    return any(symbol.startswith(stable) for stable in stablecoin_names) and any(symbol.endswith(stable) for stable in stablecoin_names if not symbol.startswith(stable))
-                microcaps = [t for t in all_tickers if t['symbol'].endswith('USDT') and t['symbol'] not in self.symbols and t['symbol'] in valid_spot_symbols and not is_stable_pair(t['symbol'])]
-                filtered_microcaps = []
-                for t in microcaps:
-                    try:
-                        price = float(t.get('lastPrice', 0) or t.get('price', 0) or 0)
-                        quote_vol = float(t.get('quoteVolume', 0) or 0)
-                        base_vol = float(t.get('volume', 0) or 0)
-                        if price > 0 and (quote_vol > 0 or base_vol > 0):
-                            filtered_microcaps.append(t)
-                    except Exception as e:
-                        logger.exception(f"[MICROCAP] Error processing microcap ticker {t.get('symbol', 'unknown')}: {e}")
-                filtered_microcaps = sorted(filtered_microcaps, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)[:10]
-                # Blacklist for symbols that repeatedly fail NOTIONAL
-                notional_blacklist = set()
-                notional_fail_count = {}
-                for micro in filtered_microcaps:
-                    try:
-                        micro_symbol = micro['symbol']
-                        if micro_symbol in notional_blacklist or micro_symbol in invalid_symbol_blacklist:
-                            logger.info(f"[MICROCAP] Skipping blacklisted symbol: {micro_symbol}")
-                            continue
-                        if micro_symbol not in valid_spot_symbols or is_stable_pair(micro_symbol):
-                            logger.info(f"[MICROCAP] Skipping invalid or stablecoin pair: {micro_symbol}")
-                            continue
-                        research_agent = ResearchAgent(micro_symbol)
-                        self.register_agent(f"microcap_{micro_symbol}", research_agent)
+            # --- Microcap strategy conditional ---
+            if getattr(settings, 'MICROCAP_ENABLED', True) and not settings.FUTURES_ENABLED:
+                try:
+                    all_tickers = binance.client.get_ticker()
+                    # Only consider microcaps with nonzero price/volume, valid spot symbol, and not a stablecoin-to-stablecoin pair
+                    def is_stable_pair(symbol):
+                        return any(symbol.startswith(stable) for stable in stablecoin_names) and any(symbol.endswith(stable) for stable in stablecoin_names if not symbol.startswith(stable))
+                    microcaps = [t for t in all_tickers if t['symbol'].endswith('USDT') and t['symbol'] not in self.symbols and t['symbol'] in valid_spot_symbols and not is_stable_pair(t['symbol'])]
+                    filtered_microcaps = []
+                    for t in microcaps:
                         try:
-                            market_data = await research_agent.fetch_market_data()
+                            price = float(t.get('lastPrice', 0) or t.get('price', 0) or 0)
+                            quote_vol = float(t.get('quoteVolume', 0) or 0)
+                            base_vol = float(t.get('volume', 0) or 0)
+                            if price > 0 and (quote_vol > 0 or base_vol > 0):
+                                filtered_microcaps.append(t)
                         except Exception as e:
-                            # Blacklist symbol if repeated invalid symbol errors
-                            if 'Invalid symbol' in str(e):
-                                invalid_symbol_fail_count[micro_symbol] = invalid_symbol_fail_count.get(micro_symbol, 0) + 1
-                                if invalid_symbol_fail_count[micro_symbol] >= 2:
-                                    invalid_symbol_blacklist.add(micro_symbol)
-                                    logger.info(f"[MICROCAP] Blacklisted {micro_symbol} after repeated INVALID SYMBOL errors.")
-                            logger.exception(f"[MICROCAP] Error fetching market data for {micro_symbol}: {e}")
-                            continue
-                        logger.info(f"[MICROCAP] Fetched market data: {market_data}")
-                        # Fetch minNotional and lot size
+                            logger.exception(f"[MICROCAP] Error processing microcap ticker {t.get('symbol', 'unknown')}: {e}")
+                    filtered_microcaps = sorted(filtered_microcaps, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)[:10]
+                    # Blacklist for symbols that repeatedly fail NOTIONAL
+                    notional_blacklist = set()
+                    notional_fail_count = {}
+                    for micro in filtered_microcaps:
                         try:
-                            symbol_info = binance.client.get_symbol_info(micro_symbol)
-                        except Exception as e:
-                            logger.exception(f"[MICROCAP] Error fetching symbol info for {micro_symbol}: {e}")
-                            continue
-                        min_notional = None
-                        min_qty = 0.0
-                        step_size = 0.0
-                        logger.info(f"[MICROCAP][DEBUG] symbol_info['filters'] for {micro_symbol}: {symbol_info['filters']}")
-                        for f in symbol_info['filters']:
-                            if f['filterType'] == 'NOTIONAL':
-                                min_notional = float(f['minNotional'])
-                            if f['filterType'] == 'LOT_SIZE':
-                                min_qty = float(f['minQty'])
-                                step_size = float(f['stepSize'])
-                        # Skip microcaps with minNotional > $10 (configurable)
-                        if min_notional is not None and min_notional > 10:
-                            logger.info(f"[MICROCAP] Skipping {micro_symbol}: minNotional {min_notional} > $10")
-                            continue
-                        try:
-                            usdt_balance = binance.get_balance("USDT")
-                        except Exception as e:
-                            logger.exception(f"[MICROCAP] Error getting USDT balance: {e}")
-                            continue
-                        # Fetch latest price before order
-                        try:
-                            price = binance.get_price(micro_symbol)
-                        except Exception as e:
-                            logger.exception(f"[MICROCAP] Error fetching latest price for {micro_symbol}: {e}")
-                            continue
-                        # Calculate qty to try to meet minNotional (with 15% buffer)
-                        min_notional_buffer = min_notional * 1.15 if min_notional else 0
-                        qty = (usdt_balance * 0.5) / price if price > 0 else 0
-                        if step_size > 0:
-                            qty = qty - (qty % step_size)
-                        qty = max(qty, min_qty)
-                        qty = float(binance.format_quantity(qty, step_size))
-                        notional = qty * price
-                        logger.info(f"[MICROCAP][DEBUG] Order payload: symbol={micro_symbol}, qty={qty}, price={price}, notional={notional}, min_notional={min_notional}, min_notional_buffer={min_notional_buffer}, min_qty={min_qty}, step_size={step_size}, usdt_balance={usdt_balance}")
-                        # Strictly check minNotional with buffer after rounding
-                        if min_notional is not None and notional < min_notional_buffer:
-                            logger.warning(f"[MICROCAP] SKIP: {micro_symbol} notional {notional} < minNotional buffer {min_notional_buffer} after rounding. No order sent.")
-                            binance.log_trade("BUY", micro_symbol, qty, price, 0, "SKIPPED", f"Notional {notional} < min_notional buffer {min_notional_buffer}", strategy="microcap")
-                            trade_results.append(("SKIPPED", qty))
-                            notional_fail_count[micro_symbol] = notional_fail_count.get(micro_symbol, 0) + 1
-                            if notional_fail_count[micro_symbol] >= 2:
-                                notional_blacklist.add(micro_symbol)
-                                logger.info(f"[MICROCAP] Blacklisted {micro_symbol} after repeated NOTIONAL failures.")
-                            continue
-                        # --- BEGIN: Real buy/sell logic using agent/layer signals ---
-                        # Example: Use analysis_agent, ML signals, and research_agent for decision
-                        try:
-                            # Get ML/ensemble signal (e.g., 1=buy, -1=sell, 0=hold)
-                            ml_signal = generate_ml_signal(micro_symbol)
-                            analysis_signal = await analysis_agent.analyze(market_data)
-                            # Convert analysis_signal to int: 1=buy, 0=hold, -1=sell
-                            analysis_recommendation = analysis_signal.get('recommendation', '').lower()
-                            if 'buy' in analysis_recommendation:
-                                analysis_signal_int = 1
-                            elif 'sell' in analysis_recommendation:
-                                analysis_signal_int = -1
-                            else:
-                                analysis_signal_int = 0
-                            research_signal = await research_agent.research(market_data)
-                            # Log all signal integer values
-                            logger.info(f"[MICROCAP][SIGNALS_INT] symbol={micro_symbol}, ml_signal={ml_signal}, analysis_signal_int={analysis_signal_int}, research_signal={research_signal}")
-                            logger.info(f"[MICROCAP][SIGNALS] symbol={micro_symbol}, ml_signal={ml_signal}, analysis_signal={analysis_signal}, research_signal={research_signal}")
-                            # Buy condition: all 3 signals agree on buy, or 2 out of 3 if relaxed
-                            if require_all_signals:
-                                buy_condition_met = (ml_signal == 1 and analysis_signal_int == 1 and research_signal == 1)
-                            else:
-                                buy_condition_met = (sum([ml_signal == 1, analysis_signal_int == 1, research_signal == 1]) >= 2)
-                        except Exception as sig_e:
-                            logger.error(f"[MICROCAP][SIGNALS] Error fetching signals for {micro_symbol}: {sig_e}")
-                            buy_condition_met = False
-                        logger.info(f"[MICROCAP][BUY_CONDITION] symbol={micro_symbol}, price={price}, qty={qty}, notional={notional}, min_notional_buffer={min_notional_buffer}, market_data={market_data}, buy_condition_met={buy_condition_met}")
-                        if buy_condition_met:
-                            logger.info(f"[MICROCAP][BUY_CONDITION] Buy condition MET for {micro_symbol}. Placing real order.")
+                            micro_symbol = micro['symbol']
+                            if micro_symbol in notional_blacklist or micro_symbol in invalid_symbol_blacklist:
+                                logger.info(f"[MICROCAP] Skipping blacklisted symbol: {micro_symbol}")
+                                continue
+                            if micro_symbol not in valid_spot_symbols or is_stable_pair(micro_symbol):
+                                logger.info(f"[MICROCAP] Skipping invalid or stablecoin pair: {micro_symbol}")
+                                continue
+                            research_agent = ResearchAgent(micro_symbol)
+                            self.register_agent(f"microcap_{micro_symbol}", research_agent)
                             try:
-                                order = binance.place_spot_order(symbol=micro_symbol, side="BUY", quantity=qty, price=price)
-                                binance.log_trade("BUY", micro_symbol, qty, price, order.get('orderId', 0), "FILLED", "Order placed successfully", strategy="microcap")
-                                trade_results.append(("FILLED", qty))
-                            except Exception as order_e:
-                                logger.error(f"[MICROCAP][ORDER] Order error for {micro_symbol}: {order_e}")
-                                binance.log_trade("BUY", micro_symbol, qty, price, 0, "FAILED", f"Order error: {order_e}", strategy="microcap")
-                                trade_results.append(("FAILED", qty))
-                        else:
-                            logger.info(f"[MICROCAP][BUY_CONDITION] Buy condition NOT met for {micro_symbol}. Skipping trade.")
-                            binance.log_trade("BUY", micro_symbol, qty, price, 0, "SKIPPED", "Buy condition not met", strategy="microcap")
-                            trade_results.append(("SKIPPED", qty))
-                        # --- END: Real buy/sell logic ---
-                    except Exception as micro_e:
-                        logger.exception(f"Error in Microcap trade for {micro.get('symbol', 'unknown')}: {micro_e}")
+                                market_data = await research_agent.fetch_market_data()
+                            except Exception as e:
+                                # Blacklist symbol if repeated invalid symbol errors
+                                if 'Invalid symbol' in str(e):
+                                    invalid_symbol_fail_count[micro_symbol] = invalid_symbol_fail_count.get(micro_symbol, 0) + 1
+                                    if invalid_symbol_fail_count[micro_symbol] >= 2:
+                                        invalid_symbol_blacklist.add(micro_symbol)
+                                        logger.info(f"[MICROCAP] Blacklisted {micro_symbol} after repeated INVALID SYMBOL errors.")
+                                logger.exception(f"[MICROCAP] Error fetching market data for {micro_symbol}: {e}")
+                                continue
+                            logger.info(f"[MICROCAP] Fetched market data: {market_data}")
+                            # Fetch minNotional and lot size
+                            try:
+                                symbol_info = binance.client.get_symbol_info(micro_symbol)
+                            except Exception as e:
+                                logger.exception(f"[MICROCAP] Error fetching symbol info for {micro_symbol}: {e}")
+                                continue
+                            min_notional = None
+                            min_qty = 0.0
+                            step_size = 0.0
+                            logger.info(f"[MICROCAP][DEBUG] symbol_info['filters'] for {micro_symbol}: {symbol_info['filters']}")
+                            for f in symbol_info['filters']:
+                                if f['filterType'] == 'NOTIONAL':
+                                    min_notional = float(f['minNotional'])
+                                if f['filterType'] == 'LOT_SIZE':
+                                    min_qty = float(f['minQty'])
+                                    step_size = float(f['stepSize'])
+                            # Skip microcaps with minNotional > $10 (configurable)
+                            if min_notional is not None and min_notional > 10:
+                                logger.info(f"[MICROCAP] Skipping {micro_symbol}: minNotional {min_notional} > $10")
+                                continue
+                            try:
+                                usdt_balance = binance.get_balance("USDT")
+                            except Exception as e:
+                                logger.exception(f"[MICROCAP] Error getting USDT balance: {e}")
+                                continue
+                            # Fetch latest price before order
+                            try:
+                                price = binance.get_price(micro_symbol)
+                            except Exception as e:
+                                logger.exception(f"[MICROCAP] Error fetching latest price for {micro_symbol}: {e}")
+                                continue
+                            # Calculate qty to try to meet minNotional (with 15% buffer) - OLD METHOD
+                            # min_notional_buffer = min_notional * 1.15 if min_notional else 0
+                            
+                            # NEW: AI-Enhanced Position Sizing
+                            min_notional_buffer = min_notional * 1.15 if min_notional else 0
+                            
+                            # Prepare portfolio state for AI position sizer
+                            try:
+                                current_positions = binance.get_spot_positions() if hasattr(binance, 'get_spot_positions') else {}
+                                portfolio_state = {
+                                    'positions': current_positions,
+                                    'max_positions': 8,  # From your configuration
+                                    'current_drawdown': 0.0  # You may want to track this
+                                }
+                                
+                                # Market context from enhanced ML analysis
+                                market_context = {
+                                    'market_regime': enhanced_ml_result.get('market_regime', 'unknown'),
+                                    'volatility': 'high' if enhanced_ml_result.get('risk_score', 0.5) > 0.7 else 'medium',
+                                    'correlation_risk': 'medium',
+                                    'liquidity': 'good'
+                                }
+                                
+                                # Get AI-optimized position size
+                                ai_position = await calculate_ai_position_size(
+                                    symbol=micro_symbol,
+                                    signal_strength=ml_signal,
+                                    signal_confidence=ml_confidence,
+                                    current_price=price,
+                                    available_capital=usdt_balance,
+                                    portfolio_state=portfolio_state,
+                                    market_context=market_context
+                                )
+                                
+                                # Use AI-recommended quantity
+                                qty = ai_position['quantity']
+                                
+                                # Log AI position sizing decision
+                                logger.info(f"[MICROCAP][AI_POSITION] symbol={micro_symbol}")
+                                logger.info(f"  AI Position Size: ${ai_position['position_size_usd']:.2f} ({ai_position['position_size_pct']:.1%})")
+                                logger.info(f"  Quantity: {qty:.6f}")
+                                logger.info(f"  Stop Loss: {ai_position['stop_loss_pct']:.1%} @ ${ai_position['stop_loss_price']:.4f}")
+                                logger.info(f"  Take Profit: {ai_position['take_profit_pct']:.1%} @ ${ai_position['take_profit_price']:.4f}")
+                                logger.info(f"  Reasoning: {ai_position['reasoning']}")
+                                logger.info(f"  Risk Factors: {ai_position['risk_factors']}")
+                                
+                            except Exception as pos_e:
+                                logger.error(f"[MICROCAP] AI position sizing failed for {micro_symbol}: {pos_e}")
+                                # Fallback to original method
+                                qty = (usdt_balance * 0.02) / price if price > 0 else 0  # Conservative 2% fallback
+                            
+                            # Apply exchange constraints
+                            if step_size > 0:
+                                qty = qty - (qty % step_size)
+                            qty = max(qty, min_qty)
+                            qty = float(binance.format_quantity(qty, step_size))
+                            notional = qty * price
+                            logger.info(f"[MICROCAP][DEBUG] Order payload: symbol={micro_symbol}, qty={qty}, price={price}, notional={notional}, min_notional={min_notional}, min_notional_buffer={min_notional_buffer}, min_qty={min_qty}, step_size={step_size}, usdt_balance={usdt_balance}")
+                            # Strictly check minNotional with buffer after rounding
+                            if min_notional is not None and notional < min_notional_buffer:
+                                logger.warning(f"[MICROCAP] SKIP: {micro_symbol} notional {notional} < minNotional buffer {min_notional_buffer} after rounding. No order sent.")
+                                binance.log_trade("BUY", micro_symbol, qty, price, 0, "SKIPPED", f"Notional {notional} < min_notional buffer {min_notional_buffer}", strategy="microcap")
+                                trade_results.append(("SKIPPED", qty))
+                                notional_fail_count[micro_symbol] = notional_fail_count.get(micro_symbol, 0) + 1
+                                if notional_fail_count[micro_symbol] >= 2:
+                                    notional_blacklist.add(micro_symbol)
+                                    logger.info(f"[MICROCAP] Blacklisted {micro_symbol} after repeated NOTIONAL failures.")
+                                continue
+                            # --- BEGIN: Real buy/sell logic using enhanced AI+ML signals ---
+                            # Get historical price data for AI-enhanced ML analysis
+                            try:
+                                price_data = binance.get_ohlcv_dataframe(micro_symbol, interval='1h', limit=100)
+                            except Exception as e:
+                                logger.warning(f"[MICROCAP] Could not fetch OHLCV data for {micro_symbol}: {e}")
+                                price_data = None
+                            
+                            try:
+                                # Get AI-enhanced ML signal with comprehensive analysis
+                                enhanced_ml_result = await generate_ai_enhanced_ml_signal(micro_symbol, price_data)
+                                ml_signal = enhanced_ml_result.get("enhanced_signal", 0)
+                                ml_confidence = enhanced_ml_result.get("confidence", 0.5)
+                                
+                                # Get standard analysis and research signals
+                                analysis_signal = await analysis_agent.analyze(market_data)
+                                analysis_action_raw = (analysis_signal.get('action') or analysis_signal.get('recommendation') or '').lower()
+                                if analysis_action_raw.startswith('buy'):
+                                    analysis_signal_int = 1
+                                elif analysis_action_raw.startswith('sell'):
+                                    analysis_signal_int = -1
+                                else:
+                                    analysis_signal_int = 0
+                                
+                                research_signal = await research_agent.research(market_data)
+                                
+                                # Enhanced logging with AI insights
+                                logger.info(f"[MICROCAP][AI_ENHANCED_SIGNALS] symbol={micro_symbol}")
+                                logger.info(f"  ML Signal: {ml_signal} (confidence: {ml_confidence:.2f})")
+                                logger.info(f"  AI Analysis: {enhanced_ml_result.get('reasoning', 'N/A')}")
+                                logger.info(f"  Market Regime: {enhanced_ml_result.get('market_regime', 'unknown')}")
+                                logger.info(f"  Risk Factors: {enhanced_ml_result.get('risk_factors', [])}")
+                                logger.info(f"  Analysis Signal: {analysis_signal_int} ({analysis_action_raw})")
+                                logger.info(f"  Research Signal: {research_signal}")
+                                
+                                # Enhanced buy condition with confidence weighting
+                                if require_all_signals:
+                                    # All signals must agree AND ML confidence must be > 0.6
+                                    buy_condition_met = (ml_signal == 1 and analysis_signal_int == 1 and research_signal == 1 and ml_confidence > 0.6)
+                                else:
+                                    # 2 out of 3 signals agree OR high-confidence ML signal (>0.8) with 1 other signal
+                                    standard_consensus = sum([ml_signal == 1, analysis_signal_int == 1, research_signal == 1]) >= 2
+                                    high_confidence_ml = (ml_signal == 1 and ml_confidence > 0.8 and (analysis_signal_int == 1 or research_signal == 1))
+                                    buy_condition_met = standard_consensus or high_confidence_ml
+                                
+                            except Exception as sig_e:
+                                logger.error(f"[MICROCAP][SIGNALS] Error fetching enhanced signals for {micro_symbol}: {sig_e}")
+                                buy_condition_met = False
+                            logger.info(f"[MICROCAP][BUY_CONDITION] symbol={micro_symbol}, price={price}, qty={qty}, notional={notional}, min_notional_buffer={min_notional_buffer}, market_data={market_data}, buy_condition_met={buy_condition_met}")
+                            if buy_condition_met:
+                                logger.info(f"[MICROCAP][BUY_CONDITION] Buy condition MET for {micro_symbol}. Placing real order.")
+                                try:
+                                    order = binance.place_spot_order(symbol=micro_symbol, side="BUY", quantity=qty, price=price)
+                                    binance.log_trade("BUY", micro_symbol, qty, price, order.get('orderId', 0), "FILLED", "Order placed successfully", strategy="microcap")
+                                    trade_results.append(("FILLED", qty))
+                                except Exception as order_e:
+                                    logger.error(f"[MICROCAP][ORDER] Order error for {micro_symbol}: {order_e}")
+                                    binance.log_trade("BUY", micro_symbol, qty, price, 0, "FAILED", f"Order error: {order_e}", strategy="microcap")
+                                    trade_results.append(("FAILED", qty))
+                            else:
+                                logger.info(f"[MICROCAP][BUY_CONDITION] Buy condition NOT met for {micro_symbol}. Skipping trade.")
+                                binance.log_trade("BUY", micro_symbol, qty, price, 0, "SKIPPED", "Buy condition not met", strategy="microcap")
+                                trade_results.append(("SKIPPED", qty))
+                        except Exception as micro_e:
+                            logger.exception(f"Error in Microcap trade for {micro.get('symbol', 'unknown')}: {micro_e}")
+                except Exception as e:
+                    logger.exception(f"Error in Microcap strategy: {e}")
+            # --- End conditional ---
+            # Periodic research snapshot update
+            try:
+                now_ts = datetime.datetime.utcnow()
+                if (now_ts - research_last_time).total_seconds() >= research_interval:
+                    try:
+                        # core snapshot
+                        snapshot = await core_research_agent.research_snapshot()
+                        self._latest_research[core_symbol] = snapshot
+                        # extended: futures symbols parallel
+                        fut_tasks = [agent.research_snapshot() for sym, agent in symbol_research_agents.items()]
+                        fut_results = await asyncio.gather(*fut_tasks, return_exceptions=True)
+                        for (sym, _agent), snap in zip(symbol_research_agents.items(), fut_results):
+                            if isinstance(snap, dict):
+                                self._latest_research[sym] = snap
+                        strategy_manager.set_research_state(snapshot)
+                        logger.info(f"[RESEARCH] Snapshot updated: macro_bias={snapshot.get('macro_bias')} sentiment={snapshot.get('sentiment_score')}")
+                    except Exception as rse:
+                        logger.error(f"[RESEARCH] snapshot error: {rse}")
+                    research_last_time = now_ts
+            except Exception:
+                pass
+            # Consensus-based futures execution (every loop on core symbols)
+            try:
+                # Import emergency controls
+                from emergency_trading_controls import emergency_controls
+                
+                for sym in futures_symbols:
+                    try:
+                        # Fetch full kline data for ATR (OHLC)
+                        klines = binance.client.get_klines(symbol=sym, interval='1h', limit=250)
+                        if not klines or len(klines) < 60:
+                            continue
+                        import pandas as pd
+                        df = pd.DataFrame(klines, columns=['open_time','open','high','low','close','volume','close_time','qav','trades','tbbav','tbqav','ignore'])
+                        df['open'] = df['open'].astype(float)
+                        df['high'] = df['high'].astype(float)
+                        df['low'] = df['low'].astype(float)
+                        df['close'] = df['close'].astype(float)
+                        # True Range & ATR (14) classic Wilder
+                        tr_list = []
+                        prev_close = None
+                        for _, row in df.iterrows():
+                            high = row['high']; low = row['low']; close = row['close']
+                            if prev_close is None:
+                                tr = high - low
+                            else:
+                                tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                            tr_list.append(tr)
+                            prev_close = close
+                        import numpy as np
+                        tr_series = pd.Series(tr_list)
+                        if len(tr_series) < 15:
+                            continue
+                        atr = tr_series.rolling(14).mean().iloc[-1]
+                        price = df['close'].iloc[-1]
+                        # Pass close-only dataframe to strategy manager (some strategies expect high/low present so keep them)
+                        strat_df = df[['open','high','low','close']].copy()
+                        signal = strategy_manager.consensus_signal(strat_df)
+                        
+                        # --- REVERSAL THROTTLE: block flips unless price moved enough (ATR * k or min pct) ---
+                        try:
+                            enforce_rev = os.getenv('REVERSAL_ENFORCE', '1') == '1'
+                            if enforce_rev and signal in ('buy','sell'):
+                                from trading_bot.utils import order_execution as _oe_chk
+                                pos_obj_before_chk = _oe_chk._position_manager.get_position(sym) if _oe_chk._position_manager else None
+                                if pos_obj_before_chk and abs(pos_obj_before_chk.size) > 0:
+                                    current_dir = 1 if pos_obj_before_chk.size > 0 else -1
+                                    incoming_dir = 1 if signal == 'buy' else -1
+                                    if incoming_dir != current_dir:  # reversal attempt
+                                        k = float(os.getenv('REVERSAL_MIN_ATR_FRACTION', '0.15'))
+                                        pct = float(os.getenv('REVERSAL_MIN_PRICE_PCT', '0.001'))  # 0.1%
+                                        entry_price = getattr(pos_obj_before_chk, 'entry_price', None) or price
+                                        atr_component = (atr * k) if (atr and atr > 0) else 0.0
+                                        pct_component = price * pct
+                                        threshold = max(atr_component, pct_component)
+                                        price_move = abs(price - entry_price)
+                                        if price_move < threshold:
+                                            logger.info(f"[REVERSAL_BLOCK] {sym} price_move={price_move:.6f} < threshold={threshold:.6f} (entry={entry_price:.6f}, price={price:.6f}, atr={atr:.6f}) -> forcing hold")
+                                            signal = 'hold'
+                        except Exception as rev_e:
+                            logger.error(f"[REVERSAL_BLOCK] error applying reversal throttle for {sym}: {rev_e}")
+                        # --- END REVERSAL THROTTLE ---
+                        
+                        # 🚨 EMERGENCY: Get enhanced ML signal with confidence
+                        try:
+                            enhanced_ml_result = await generate_ai_enhanced_ml_signal(
+                                symbol=sym,
+                                price_data=strat_df
+                            )
+                            # Enhanced result uses -1/0/1 numeric signal
+                            ml_signal_val = enhanced_ml_result.get('enhanced_signal', 0)
+                            ml_confidence = float(enhanced_ml_result.get('confidence', 0.0))  # 0-1 scale
+                            ai_signal = {1: 'buy', -1: 'sell', 0: 'hold'}.get(ml_signal_val, 'hold')
+                            signal_confidence = ml_confidence  # keep 0-1 scale
+                            
+                            logger.info(f"[EMERGENCY_SIGNAL] {sym}: ML confidence={signal_confidence:.2%}, AI signal={ai_signal}")
+                        except Exception as ml_err:
+                            logger.error(f"[EMERGENCY_SIGNAL] {sym} ML error: {ml_err}")
+                            signal_confidence = 0.0
+                            ai_signal = 'hold'
+                        # Adjust confidence threshold interpretation: emergency controls expect percent-like threshold (0-1 if <=1)
+                        trade_allowed, reason = emergency_controls.should_allow_trade(sym, signal_confidence * 100 if emergency_controls.min_confidence > 1 else signal_confidence)
+                        if not trade_allowed:
+                            logger.warning(f"[EMERGENCY_BLOCK] {sym}: {reason}")
+                            continue
+                        
+                        from trading_bot.utils import order_execution as oe
+                        pos_before = oe._position_manager.get_position(sym).size if oe._position_manager else 0.0
+                        # --- Risk Management: check if trade is allowed and adjust position size ---
+                        if not self.risk_manager.allow_trade():
+                            logger.warning(f"[RISK] Trade blocked for {sym} due to excessive drawdown.")
+                            continue
+                        position_scale = self.risk_manager.get_position_size()
+                        
+                        # Funding adjustment
+                        try:
+                            metrics = futures_metrics_cache.get(sym)
+                            funding_rate = metrics.get('funding_rate')
+                            scale_fr = await funding_position_scale(sym, funding_rate)
+                            if scale_fr != 1.0:
+                                logger.info(f"[FUNDING_ADJUST] {sym} funding_rate={funding_rate} scale={scale_fr}")
+                                position_scale *= scale_fr
+                        except Exception as fe:
+                            logger.error(f"[FUNDING_ADJUST] {sym} error: {fe}")
+                        # Risk overlay scale (macro + metrics)
+                        overlay_scale = self._risk_overlay_scale(sym, metrics, self._latest_research.get(sym))
+                        if overlay_scale != 1.0:
+                            logger.info(f"[RISK_OVERLAY] {sym} overlay_scale={overlay_scale:.3f}")
+                            position_scale *= overlay_scale
+                        emergency_scale = emergency_controls.adjust_position_size(position_scale)
+                        final_position_scale = emergency_scale
+                        
+                        logger.info(f"[EMERGENCY_POSITION] {sym}: Final scale={final_position_scale:.3f}")
+                        
+                        # Pass position_scale to submit_signal if supported, else scale target_qty/size in your signal logic
+                        oe.submit_signal(sym, signal, price, atr=atr, position_scale=final_position_scale)
+                        
+                        # 🚨 EMERGENCY: Record trade if position changed
+                        pos_after = oe._position_manager.get_position(sym).size if oe._position_manager else 0.0
+                        if abs(pos_after - pos_before) > 0.001:  # Position changed
+                            trade_signal = 'buy' if pos_after > pos_before else 'sell'
+                            emergency_controls.record_trade(sym, trade_signal, 0)  # PnL will be updated later
+                        
+                        # NEW: invoke risk management (trailing stop / partial TP)
+                        try:
+                            oe.manage_positions(sym, price, atr=atr)
+                        except Exception as rm_err:
+                            logger.error(f"[RISK_MANAGE] {sym} manage_positions error: {rm_err}")
+                    except Exception as es:
+                        logger.error(f"[FUTURES_EXEC] {sym} error: {es}")
+                
+                # 🚨 EMERGENCY: Log status every loop
+                try:
+                    status = emergency_controls.get_status()
+                    logger.info(f"[EMERGENCY_STATUS] Daily PnL: {status['daily_pnl']:.6f}, Active cooldowns: {status['active_cooldowns']}")
+                except Exception as status_err:
+                    logger.error(f"[EMERGENCY_STATUS] Error: {status_err}")
+                # Snapshot code remains below
+                try:
+                    if (datetime.datetime.utcnow() - last_snapshot_time).total_seconds() > 300:
+                        from trading_bot.utils import order_execution as oe2
+                        equity = oe2._position_manager.equity if oe2._position_manager else ''
+                        with open(snapshot_path, 'a', newline='') as f:
+                            w = csv.writer(f)
+                            for sym in futures_symbols:
+                                try:
+                                    pos = oe2._position_manager.get_position(sym) if oe2._position_manager else None
+                                    if pos:
+                                        w.writerow([
+                                            datetime.datetime.utcnow().isoformat(),
+                                            sym,
+                                            pos.size,
+                                            pos.entry_price,
+                                            pos.realized_pnl,
+                                            equity
+                                        ])
+                                except Exception as pxe:
+                                    logger.error(f"Snapshot position error {sym}: {pxe}")
+                        last_snapshot_time = datetime.datetime.utcnow()
+                except Exception as snap_e:
+                    logger.error(f"Snapshot logging failed: {snap_e}")
             except Exception as e:
-                logger.exception(f"Error in Microcap strategy: {e}")
+                logger.error(f"[FUTURES_EXEC] loop error: {e}")
             await asyncio.sleep(30)
-        # --- END PATCH ---
-    def __init__(self):
-        self.agents = {}
-        self.loop = asyncio.get_event_loop()
-        self.daily_loss = 0.0
-        self.max_daily_loss = float(getattr(settings, 'MAX_DAILY_LOSS', 1000))
-        self.smart_router = SmartOrderRouter()
-        self.trail_perc = float(os.getenv('TRAILING_STOP_PERC', 1.5))
-        self.take_profit_perc = float(os.getenv('TAKE_PROFIT_PERC', 2.0))
-        self.position_sizing_mode = os.getenv('POSITION_SIZING_MODE', 'fixed')
-        self.risk_monitor = RiskMonitor()
-        # Advanced modules
-        from trading_bot.utils import adaptive_position_sizing, portfolio_optimizer, multi_timeframe, continuous_learning, alpha_signal_stacker, regime_switcher, order_execution, onchain_social_analytics, risk_controls, performance_monitor, backtest_simulator
-        self.adaptive_position_sizing = adaptive_position_sizing
-        self.portfolio_optimizer = portfolio_optimizer
-        self.multi_timeframe = multi_timeframe
-        self.continuous_learning = continuous_learning
-        self.alpha_signal_stacker = alpha_signal_stacker
-        self.regime_switcher = regime_switcher
-        self.order_execution = order_execution
-        self.onchain_social_analytics = onchain_social_analytics
-        self.risk_controls = risk_controls
-        self.performance_monitor = performance_monitor
-        self.backtest_simulator = backtest_simulator
-        logger.info("ManagerAgent initialized with super-broker and advanced modules.")
-
-    def register_agent(self, name, agent):
-        self.agents[name] = agent
-        logger.info(f"Registered agent: {name}")
-
-    async def send_message(self, message: AgentMessage):
-        recipient = self.agents.get(message.recipient)
-        if recipient:
-            await recipient.receive_message(message)
-        else:
-            logger.error(f"Recipient agent {message.recipient} not found.")
-
-
-    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "SOLUSDT", "DOGEUSDT", "SHIBUSDT", "DOTUSDT", "MATICUSDT", "LINKUSDT", "LTCUSDT", "AVAXUSDT", "UNIUSDT", "XLMUSDT"]
-
-    async def research_and_add_hot_coin(self, binance, min_change=None, min_volume=None):
-        """Research and add a new hot coin to the symbols list if not already present. Logs analytics on top movers."""
-        import os
-        min_change = min_change if min_change is not None else float(os.getenv('HOT_COIN_MIN_CHANGE', 5))
-        min_volume = min_volume if min_volume is not None else float(os.getenv('HOT_COIN_MIN_VOLUME', 1000000))
-        try:
-            tickers = binance.client.get_ticker()
-            # Exclude stablecoins and already tracked symbols
-            stablecoins = ["USDT", "BUSD", "USDC", "TUSD", "DAI"]
-            def is_stable(symbol):
-                return any(stable in symbol for stable in stablecoins)
-            usdt_tickers = [t for t in tickers if t['symbol'].endswith('USDT') and t['symbol'] not in self.symbols and not is_stable(t['symbol'].replace('USDT',''))]
-            # Filter by min volume and price change
-            filtered = [t for t in usdt_tickers if float(t.get('quoteVolume', 0)) > min_volume and abs(float(t.get('priceChangePercent', 0))) > min_change]
-            # Sort by priceChangePercent descending
-            filtered.sort(key=lambda x: float(x.get('priceChangePercent', 0)), reverse=True)
-            # Log analytics: top 3 gainers/losers by % and volume
-            top_gainers = sorted(usdt_tickers, key=lambda x: float(x.get('priceChangePercent', 0)), reverse=True)[:3]
-            top_losers = sorted(usdt_tickers, key=lambda x: float(x.get('priceChangePercent', 0)))[:3]
-            top_volume = sorted(usdt_tickers, key=lambda x: float(x.get('quoteVolume', 0)), reverse=True)[:3]
-            gainers_str = [f"{t['symbol']} {t['priceChangePercent']}%" for t in top_gainers]
-            losers_str = [f"{t['symbol']} {t['priceChangePercent']}%" for t in top_losers]
-            volume_str = [f"{t['symbol']} {t['quoteVolume']}" for t in top_volume]
-            logger.info(f"Top 3 gainers: {gainers_str}")
-            logger.info(f"Top 3 losers: {losers_str}")
-            logger.info(f"Top 3 by volume: {volume_str}")
-            if filtered:
-                chosen = filtered[0]
-                self.symbols.append(chosen['symbol'])
-                logger.info(f"Added new hot coin to symbols: {chosen['symbol']} (change: {chosen['priceChangePercent']}%, volume: {chosen['quoteVolume']})")
-        except Exception as e:
-            logger.error(f"Error researching hot coin: {e}")

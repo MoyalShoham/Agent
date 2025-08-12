@@ -1,7 +1,11 @@
 /.env
 *.log
+*.log.*
+*log.csv
 *.csv
-/.csv
+/trading_bot.log
+/futures_trades_log.csv
+*trade_log.csv
 !README.md
 !requirements.txt
 !*.py

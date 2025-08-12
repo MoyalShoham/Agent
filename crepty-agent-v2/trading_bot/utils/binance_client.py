@@ -147,19 +147,24 @@ class BinanceClient:
                 writer.writerow(row)
         return filename
     def get_total_usdt_value(self):
-        """Estimate total portfolio value in USDT (sum of all assets converted to USDT)."""
+        """Estimate total portfolio value in USDT (sum of all assets converted to USDT). Skips invalid pairs."""
         portfolio = self.get_portfolio()
         total = 0.0
         for asset, amount in portfolio.items():
+            if amount <= 0:
+                continue
             if asset == 'USDT':
                 total += amount
-            else:
-                symbol = f"{asset}USDT"
-                try:
-                    price = self.get_price(symbol)
+                continue
+            symbol = f"{asset}USDT".upper()
+            if hasattr(self, 'valid_symbols') and self.valid_symbols and symbol not in self.valid_symbols:
+                continue  # skip assets without a spot pair
+            try:
+                price = self.get_price(symbol)
+                if price is not None:
                     total += amount * price
-                except Exception:
-                    continue  # skip assets without USDT pair
+            except Exception:
+                continue
         return total
     def bollinger_bands(self, prices, window=20, num_std=2):
         if len(prices) < window:
@@ -261,6 +266,36 @@ class BinanceClient:
             return closes
         except Exception as e:
             raise RuntimeError(f"Binance historical price fetch error: {e}")
+    
+    def get_ohlcv_dataframe(self, symbol: str, interval: str = '1h', limit: int = 100):
+        """Get OHLCV data as pandas DataFrame for ML analysis"""
+        try:
+            import pandas as pd
+            from datetime import datetime
+            
+            klines = self.client.get_klines(symbol=symbol, interval=interval, limit=limit)
+            
+            data = []
+            for k in klines:
+                data.append({
+                    'timestamp': datetime.fromtimestamp(k[0] / 1000),
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5])
+                })
+            
+            df = pd.DataFrame(data)
+            df.set_index('timestamp', inplace=True)
+            return df
+            
+        except ImportError:
+            logging.error("pandas not available for DataFrame creation")
+            return None
+        except Exception as e:
+            logging.error(f"Error getting OHLCV dataframe for {symbol}: {e}")
+            return None
 
     def simple_moving_average(self, prices, window=14):
         if len(prices) < window:
@@ -282,6 +317,13 @@ class BinanceClient:
         self.client = Client(self.api_key, self.api_secret)
         from trading_bot.config.settings import settings
         self.paper_trading = paper_trading if paper_trading is not None else getattr(settings, 'PAPER_TRADING', True)
+        # Cache valid trading symbols to avoid repeated invalid symbol retries
+        try:
+            info = self.client.get_exchange_info()
+            self.valid_symbols = {s['symbol'] for s in info['symbols'] if s.get('status') == 'TRADING'}
+        except Exception as e:
+            logging.warning(f"[INIT] Failed to cache valid symbols: {e}")
+            self.valid_symbols = set()
 
     @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
     def get_min_notional(self, symbol: str):
@@ -441,12 +483,36 @@ class BinanceClient:
             raise RuntimeError(f"Binance order error: {e}")
     # (Removed duplicate __init__)
 
-    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
+    # Remove retry for get_price to prevent noisy retries on permanently invalid symbols
     def get_price(self, symbol: str):
         try:
+            if hasattr(self, 'valid_symbols') and self.valid_symbols and symbol not in self.valid_symbols:
+                # Return None silently for invalid symbol instead of raising
+                return None
             ticker = self.client.get_symbol_ticker(symbol=symbol)
             return float(ticker['price'])
         except Exception as e:
+            msg = str(e)
+            if 'Invalid symbol' in msg or 'INVALID_SYMBOL' in msg:
+                logging.debug(f"[PRICE] Skipping invalid symbol {symbol}")
+                return None
             raise RuntimeError(f"Binance price fetch error: {e}")
 
-    # Add more methods as needed for trading, order management, etc.
+    @retry_on_exception(max_retries=5, initial_delay=1, backoff=2)
+    def get_klines(self, symbol: str, interval: str = '1h', limit: int = 500, startTime: int | None = None, endTime: int | None = None):
+        """Lightweight wrapper for spot klines to support scripts expecting BinanceClient.get_klines.
+        Returns raw list as provided by python-binance. Parameters mirror official API.
+        """
+        try:
+            params = {
+                'symbol': symbol,
+                'interval': interval,
+                'limit': min(limit, 1000)
+            }
+            if startTime is not None:
+                params['startTime'] = startTime
+            if endTime is not None:
+                params['endTime'] = endTime
+            return self.client.get_klines(**params)
+        except Exception as e:
+            raise RuntimeError(f"Binance get_klines error: {e}")
