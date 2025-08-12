@@ -1385,3 +1385,42 @@
 2025-08-12 15:51:01.400 | INFO     | __main__:run_stop_loss_check:633 -    🚨 Signals generated: 2
 2025-08-12 15:51:01.401 | INFO     | __main__:run_stop_loss_check:634 -    🛑 Stops executed: 0
 2025-08-12 15:51:45.558 | INFO     | __main__:main:692 - 🛑 Monitoring stopped by user
+2025-08-12 16:51:20.769 | INFO     | __main__:__init__:118 - 🛡️ Enhanced Stop Loss System initialized
+2025-08-12 16:51:22.046 | INFO     | __main__:initialize:168 - 🔄 Imported 5 live exchange positions into PositionManager for monitoring
+2025-08-12 16:51:22.046 | INFO     | __main__:initialize:172 - 📊 Monitoring 17 symbols
+2025-08-12 16:51:22.046 | INFO     | __main__:initialize:173 - 🎯 Active symbols: ['ADAUSDT', 'APTUSDT', 'ARBUSDT', 'AVAXUSDT', 'BNBUSDT', 'BTCUSDT', 'DOGEUSDT', 'ETHUSDT', 'LINKUSDT', 'NEARUSDT', 'OPUSDT', 'RENDERUSDT', 'SOLUSDT', 'SPELLUSDT', 'TRXUSDT', 'UNIUSDT', 'XRPUSDT']
+2025-08-12 16:51:22.047 | INFO     | __main__:main:682 - 🚀 Enhanced Stop Loss System started
+2025-08-12 16:51:22.047 | INFO     | __main__:main:686 - 📡 Monitoring mode: checking every 60 seconds
+2025-08-12 16:51:22.048 | INFO     | __main__:run_stop_loss_check:597 - 🔍 Running stop loss analysis...
+2025-08-12 16:51:22.644 | DEBUG    | __main__:analyze_position:434 - Analyzing ARBUSDT: size=15.6000, entry=0.4559, current=0.4530, atr=0.008143, pnl=-0.0459
+2025-08-12 16:51:23.257 | DEBUG    | __main__:analyze_position:434 - Analyzing SPELLUSDT: size=167830.0000, entry=0.0005, current=0.0005, atr=0.000006, pnl=-0.7148
+2025-08-12 16:51:23.846 | DEBUG    | __main__:analyze_position:434 - Analyzing NEARUSDT: size=48.0000, entry=2.6181, current=2.6280, atr=0.035286, pnl=0.4756
+2025-08-12 16:51:24.434 | DEBUG    | __main__:analyze_position:434 - Analyzing APTUSDT: size=1.6000, entry=4.6238, current=4.6144, atr=0.057786, pnl=-0.0150
+2025-08-12 16:51:25.027 | DEBUG    | __main__:analyze_position:434 - Analyzing OPUSDT: size=-92.1000, entry=0.7476, current=0.7586, atr=0.013214, pnl=-1.0142
+2025-08-12 16:51:25.028 | INFO     | __main__:run_stop_loss_check:630 - 📊 Stop loss check complete:
+2025-08-12 16:51:25.028 | INFO     | __main__:run_stop_loss_check:631 -    ⏱️ Execution time: 2.98s
+2025-08-12 16:51:25.028 | INFO     | __main__:run_stop_loss_check:632 -    📋 Positions checked: 5
+2025-08-12 16:51:25.029 | INFO     | __main__:run_stop_loss_check:633 -    🚨 Signals generated: 0
+2025-08-12 16:51:25.029 | INFO     | __main__:run_stop_loss_check:634 -    🛑 Stops executed: 0
+2025-08-12 16:52:25.031 | INFO     | __main__:run_stop_loss_check:597 - 🔍 Running stop loss analysis...
+2025-08-12 16:52:25.628 | DEBUG    | __main__:analyze_position:434 - Analyzing ARBUSDT: size=15.6000, entry=0.4559, current=0.4534, atr=0.008143, pnl=-0.0400
+2025-08-12 16:52:26.235 | DEBUG    | __main__:analyze_position:434 - Analyzing SPELLUSDT: size=167830.0000, entry=0.0005, current=0.0005, atr=0.000006, pnl=-0.7165
+2025-08-12 16:52:26.841 | DEBUG    | __main__:analyze_position:434 - Analyzing NEARUSDT: size=48.0000, entry=2.6181, current=2.6300, atr=0.035286, pnl=0.5716
+2025-08-12 16:52:27.452 | DEBUG    | __main__:analyze_position:434 - Analyzing APTUSDT: size=1.6000, entry=4.6238, current=4.6124, atr=0.057786, pnl=-0.0182
+2025-08-12 16:52:28.045 | DEBUG    | __main__:analyze_position:434 - Analyzing OPUSDT: size=-92.1000, entry=0.7476, current=0.7581, atr=0.013214, pnl=-0.9668
+2025-08-12 16:52:28.045 | INFO     | __main__:run_stop_loss_check:630 - 📊 Stop loss check complete:
+2025-08-12 16:52:28.046 | INFO     | __main__:run_stop_loss_check:631 -    ⏱️ Execution time: 3.01s
+2025-08-12 16:52:28.046 | INFO     | __main__:run_stop_loss_check:632 -    📋 Positions checked: 5
+2025-08-12 16:52:28.046 | INFO     | __main__:run_stop_loss_check:633 -    🚨 Signals generated: 0
+2025-08-12 16:52:28.046 | INFO     | __main__:run_stop_loss_check:634 -    🛑 Stops executed: 0
+2025-08-12 16:53:28.048 | INFO     | __main__:run_stop_loss_check:597 - 🔍 Running stop loss analysis...
+2025-08-12 16:53:28.647 | DEBUG    | __main__:analyze_position:434 - Analyzing ARBUSDT: size=15.6000, entry=0.4559, current=0.4550, atr=0.008143, pnl=-0.0147
+2025-08-12 16:53:29.239 | DEBUG    | __main__:analyze_position:434 - Analyzing SPELLUSDT: size=167830.0000, entry=0.0005, current=0.0005, atr=0.000006, pnl=-0.5990
+2025-08-12 16:53:29.854 | DEBUG    | __main__:analyze_position:434 - Analyzing NEARUSDT: size=48.0000, entry=2.6181, current=2.6382, atr=0.035286, pnl=0.9663
+2025-08-12 16:53:30.469 | DEBUG    | __main__:analyze_position:434 - Analyzing APTUSDT: size=1.6000, entry=4.6238, current=4.6283, atr=0.057786, pnl=0.0073
+2025-08-12 16:53:31.073 | DEBUG    | __main__:analyze_position:434 - Analyzing OPUSDT: size=-92.1000, entry=0.7476, current=0.7600, atr=0.013214, pnl=-1.1418
+2025-08-12 16:53:31.073 | INFO     | __main__:run_stop_loss_check:630 - 📊 Stop loss check complete:
+2025-08-12 16:53:31.074 | INFO     | __main__:run_stop_loss_check:631 -    ⏱️ Execution time: 3.03s
+2025-08-12 16:53:31.074 | INFO     | __main__:run_stop_loss_check:632 -    📋 Positions checked: 5
+2025-08-12 16:53:31.074 | INFO     | __main__:run_stop_loss_check:633 -    🚨 Signals generated: 0
+2025-08-12 16:53:31.075 | INFO     | __main__:run_stop_loss_check:634 -    🛑 Stops executed: 0
