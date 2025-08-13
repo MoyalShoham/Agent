@@ -1,0 +1,66 @@
+{
+  "trading": {
+    "symbols": ["BTCUSDT", "ETHUSDT", "ADAUSDT", "SOLUSDT", "DOTUSDT"],
+    "position_size": 0.1,
+    "max_positions": 5,
+    "stop_loss_pct": 0.02,
+    "take_profit_pct": 0.04,
+    "trading_enabled": true
+  },
+  "data_collection": {
+    "enabled": true,
+    "intervals": ["1m", "5m", "15m", "1h", "4h", "1d"],
+    "websocket_streams": true,
+    "binance_enabled": true,
+    "aggregator_enabled": true
+  },
+  "ai_agents": {
+    "enabled": true,
+    "analysis_interval": 300,
+    "comprehensive_analysis_interval": 900,
+    "model": "gpt-4o",
+    "temperature": 0.2
+  },
+  "reports": {
+    "monthly_auto_generate": true,
+    "yearly_auto_generate": true,
+    "monthly_day": 1,
+    "email_reports": false,
+    "tax_reports_auto": true
+  },
+  "risk_management": {
+    "max_portfolio_risk": 0.05,
+    "max_single_position_risk": 0.02,
+    "emergency_stop_loss": 0.10,
+    "correlation_limit": 0.7
+  },
+  "strategies": {
+    "trend_following": {
+      "enabled": true,
+      "allocation": 0.25
+    },
+    "volatility_breakout": {
+      "enabled": true,
+      "allocation": 0.25
+    },
+    "funding_squeeze": {
+      "enabled": true,
+      "allocation": 0.25
+    },
+    "mean_reversion": {
+      "enabled": true,
+      "allocation": 0.25
+    }
+  },
+  "meta_learning": {
+    "enabled": true,
+    "retrain_interval": 24,
+    "context_window": 100,
+    "exploration_rate": 0.1
+  },
+  "logging": {
+    "level": "INFO",
+    "file_rotation": "1 day",
+    "retention": "30 days"
+  }
+}

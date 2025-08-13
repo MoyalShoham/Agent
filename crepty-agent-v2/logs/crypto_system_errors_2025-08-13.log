@@ -1,0 +1,4 @@
+2025-08-13 21:00:47 | ERROR    | __main__:initialize_components:165 - ❌ Error initializing components: RealTimeDataManager.__init__() missing 1 required positional argument: 'symbols'
+2025-08-13 21:03:16 | ERROR    | __main__:initialize_components:170 - ❌ Error initializing components: TradingSystemCoordinator.__init__() got an unexpected keyword argument 'data_collector'
+2025-08-13 21:06:44 | ERROR    | __main__:start_system:184 - ❌ Error starting system: 'Job' object has no attribute 'month'
+2025-08-13 21:06:44 | ERROR    | __main__:main:436 - ❌ Fatal error: 'Job' object has no attribute 'month'

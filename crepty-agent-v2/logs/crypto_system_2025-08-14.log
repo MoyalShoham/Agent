@@ -1,0 +1,62 @@
+2025-08-14 00:35:26 | INFO     | __main__:initialize_components:135 - 🚀 Initializing Crypto Trading System Components...
+2025-08-14 00:35:26 | INFO     | __main__:initialize_components:142 - ⚡ Initializing Trading System Coordinator...
+2025-08-14 00:35:26 | INFO     | __main__:initialize_components:148 - ✅ All components initialized successfully!
+2025-08-14 00:35:26 | INFO     | __main__:start_system:157 - 🚀 Starting Comprehensive Crypto Trading System...
+2025-08-14 00:35:26 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:58 - 🚀 Initializing Real-Time Crypto Trading System...
+2025-08-14 00:35:26 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:63 - ✅ Data manager initialized
+2025-08-14 00:35:26 | INFO     | trading_bot.strategies.strategy_experts:add_strategy:455 - ✅ Added strategy: TrendFollowing (weight: 1.2)
+2025-08-14 00:35:26 | INFO     | trading_bot.strategies.strategy_experts:add_strategy:455 - ✅ Added strategy: VolatilityBreakout (weight: 1.0)
+2025-08-14 00:35:26 | INFO     | trading_bot.strategies.strategy_experts:add_strategy:455 - ✅ Added strategy: FundingSqueeze (weight: 0.8)
+2025-08-14 00:35:26 | INFO     | trading_bot.strategies.strategy_experts:add_strategy:455 - ✅ Added strategy: MeanReversion (weight: 0.9)
+2025-08-14 00:35:26 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:67 - ✅ Strategy manager initialized with 4 strategies
+2025-08-14 00:35:26 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:71 - ✅ AI agent orchestrator initialized
+2025-08-14 00:35:26 | INFO     | trading_bot.ai_models.meta_learner:initialize:150 - ✅ Meta-learner initialized with 4 strategies
+2025-08-14 00:35:26 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:76 - ✅ Meta-learner initialized
+2025-08-14 00:35:26 | INFO     | trading_bot.risk.advanced_risk_manager:__init__:90 - Advanced Risk Manager initialized with enhanced features
+2025-08-14 00:35:26 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:80 - ✅ Risk manager initialized
+2025-08-14 00:35:28 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:84 - ✅ Binance client initialized
+2025-08-14 00:35:28 | INFO     | trading_bot.coordinators.trading_system_coordinator:initialize:86 - 🎯 All components initialized successfully
+2025-08-14 00:35:28 | INFO     | __main__:start_system:163 - ⚡ Starting trading system coordinator...
+2025-08-14 00:35:28 | INFO     | __main__:schedule_ai_analysis:202 - 📊 AI analysis scheduled
+2025-08-14 00:35:28 | INFO     | __main__:schedule_automatic_reports:215 - 📋 Automatic reports scheduled
+2025-08-14 00:35:28 | INFO     | __main__:start_system:178 - ✅ Crypto Trading System is now running!
+2025-08-14 00:35:28 | INFO     | trading_bot.coordinators.trading_system_coordinator:run:98 - 🎮 Starting trading system execution loop...
+2025-08-14 00:35:28 | INFO     | trading_bot.data.real_time_data_collector:start:459 - 🚀 Starting Real-Time Data Manager
+2025-08-14 00:35:28 | INFO     | trading_bot.coordinators.trading_system_coordinator:_trading_loop:127 - 📊 Starting trading decision loop...
+2025-08-14 00:35:28 | INFO     | trading_bot.coordinators.trading_system_coordinator:_position_monitoring_loop:615 - 👁️ Starting position monitoring loop...
+2025-08-14 00:35:28 | INFO     | trading_bot.coordinators.trading_system_coordinator:_performance_tracking_loop:636 - 📈 Starting performance tracking loop...
+2025-08-14 00:35:28 | INFO     | trading_bot.data.real_time_data_collector:start:74 - Starting Binance WS data collector for 30 symbols
+2025-08-14 00:35:29 | DEBUG    | trading_bot.data.real_time_data_collector:_periodic_aggregator_fetch:510 - Fetched aggregator data: CG=3, CC=True
+2025-08-14 00:35:29 | INFO     | trading_bot.data.real_time_data_collector:_connect_aggTrade_stream:94 - ✅ Connected to Binance aggTrade stream
+2025-08-14 00:35:29 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:29 | INFO     | trading_bot.data.real_time_data_collector:_connect_mark_price_stream:123 - ✅ Connected to Binance mark price stream
+2025-08-14 00:35:29 | INFO     | trading_bot.data.real_time_data_collector:_connect_liquidation_stream:137 - ✅ Connected to Binance liquidation stream
+2025-08-14 00:35:29 | INFO     | trading_bot.data.real_time_data_collector:_connect_depth_stream:109 - ✅ Connected to Binance depth stream
+2025-08-14 00:35:30 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:30 | ERROR    | trading_bot.coordinators.trading_system_coordinator:_get_ohlcv_data:253 - OHLCV data error for PLAYUSDT: APIError(code=-1121): Invalid symbol.
+2025-08-14 00:35:31 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:32 | ERROR    | trading_bot.coordinators.trading_system_coordinator:_get_ohlcv_data:253 - OHLCV data error for TAGUSDT: APIError(code=-1121): Invalid symbol.
+2025-08-14 00:35:32 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:34 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:35 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:36 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:36 | ERROR    | trading_bot.coordinators.trading_system_coordinator:_get_ohlcv_data:253 - OHLCV data error for YALAUSDT: APIError(code=-1121): Invalid symbol.
+2025-08-14 00:35:37 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:37 | ERROR    | trading_bot.coordinators.trading_system_coordinator:_get_ohlcv_data:253 - OHLCV data error for TAUUSDT: APIError(code=-1121): Invalid symbol.
+2025-08-14 00:35:38 | ERROR    | trading_bot.coordinators.trading_system_coordinator:_get_open_interest_data:311 - Open interest data error for TAUUSDT: APIError(code=-1121): Invalid symbol.
+2025-08-14 00:35:40 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:42 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:43 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:44 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:45 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:46 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:47 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:49 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:50 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:51 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:52 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:53 | ERROR    | trading_bot.strategies.strategy_experts:generate_signal:339 - FundingSqueeze strategy error: The truth value of a DataFrame is ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().
+2025-08-14 00:35:54 | INFO     | trading_bot.coordinators.trading_system_coordinator:shutdown:690 - 🛑 Shutting down trading system...
+2025-08-14 00:35:54 | INFO     | trading_bot.data.real_time_data_collector:stop:277 - 🛑 Stopping Binance WS data collector
+2025-08-14 00:35:54 | INFO     | trading_bot.data.real_time_data_collector:stop:522 - 🛑 Real-Time Data Manager stopped
+2025-08-14 00:35:54 | INFO     | trading_bot.coordinators.trading_system_coordinator:shutdown:702 - ✅ Trading system shutdown complete
