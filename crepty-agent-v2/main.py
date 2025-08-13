@@ -1,12 +1,19 @@
+
 import os
 import logging
 from dotenv import load_dotenv
 from loguru import logger
 from trading_bot.agents.manager_agent import ManagerAgent
 from trading_bot.config.settings import settings
-
-# Keep AdvancedRiskManager (no global singleton defined)
 from trading_bot.risk.advanced_risk_manager import AdvancedRiskManager
+
+# --- Start auto symbol agent in background ---
+try:
+    from auto_symbol_agent import start_agent as start_symbol_agent
+    start_symbol_agent()
+    logger.info("✅ Auto symbol agent started (background)")
+except Exception as e:
+    logger.error(f"❌ Failed to start auto symbol agent: {e}")
 
 # Replace duplicate instantiations with singleton imports
 # (These modules already create global instances at import time)

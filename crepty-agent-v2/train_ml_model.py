@@ -69,12 +69,16 @@ def _create_synthetic(rows: int = 1000) -> pd.DataFrame:
     return df
 
 def _prepare_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Create classification labels without dropping rows containing NaNs in unrelated feature columns.
+    Only rows with NaN future_return are removed (last horizon bars)."""
     df['future_return'] = df['close'].shift(-5) / df['close'] - 1
+    # Initialize neutral
     df['label'] = 0
     df.loc[df['future_return'] > 0.01, 'label'] = 1
     df.loc[df['future_return'] < -0.01, 'label'] = -1
-    df = df.dropna().copy()
-    return df
+    # Drop only rows where future_return is NaN (due to shift) to avoid wiping out microstructure sparse rows
+    labeled = df[df['future_return'].notna()].copy()
+    return labeled
 
 def _class_balance_ok(labels: pd.Series) -> bool:
     counts = labels.value_counts()
@@ -86,6 +90,38 @@ def _class_balance_ok(labels: pd.Series) -> bool:
         logger.warning(f"Minority class too small for robust training (min={min_count})")
         return False
     return True
+
+def _maybe_merge_orderbook_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Attempt to merge 5m microstructure features if present.
+    Expects generated file at data/orderbook/{PRIMARY_SYMBOL}_5m_features.csv.
+    PRIMARY_SYMBOL derived from FUTURES_SYMBOLS env first entry.
+    """
+    data_dir = os.environ.get('OB_DATA_DIR', 'data/orderbook')
+    symbols_env = os.environ.get('FUTURES_SYMBOLS', 'ETHUSDT')
+    primary_symbol = symbols_env.split(',')[0].strip().upper()
+    feat_file = os.path.join(data_dir, f"{primary_symbol}_5m_features.csv")
+    if not os.path.exists(feat_file):
+        logger.info(f"Order book feature file not found: {feat_file} (skipping microstructure merge)")
+        return df
+    try:
+        ob = pd.read_csv(feat_file)
+        if 'timestamp' not in ob.columns:
+            logger.warning("Order book feature file missing timestamp column")
+            return df
+        ob['timestamp'] = pd.to_datetime(ob['timestamp'], utc=True, errors='coerce')
+        ob = ob.dropna(subset=['timestamp']).set_index('timestamp')
+        # If training df index not UTC localized, convert
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('UTC')
+        # Forward fill microstructure to higher timeframe bars if needed
+        merged = df.join(ob.add_prefix('ob_'), how='left')
+        # Optionally fill forward limited to 2 periods to avoid leakage
+        merged.update(merged.filter(like='ob_').ffill(limit=2))
+        logger.info(f"Merged order book features: added {len([c for c in merged.columns if c.startswith('ob_')])} columns")
+        return merged
+    except Exception as e:
+        logger.warning(f"Failed merging order book features: {e}")
+        return df
 
 def train_ml_model_with_historical_data() -> bool:
     df = _load_historical_data()
@@ -104,6 +140,8 @@ def train_ml_model_with_historical_data() -> bool:
     if len(df) < 150:
         logger.error("Insufficient data (<150 rows)")
         return False
+    # Integrate microstructure features BEFORE labeling to allow them in label generation if desired later
+    df = _maybe_merge_orderbook_features(df)
     df = _prepare_labels(df)
     if len(df) < 120:
         logger.error("Insufficient data after labeling")
@@ -120,13 +158,34 @@ def train_ml_model_with_historical_data() -> bool:
     if feat_df.empty:
         logger.error("Feature engineering produced empty dataframe")
         return False
+    # Append microstructure engineered columns (prefixed) into feat_df if present
+    micro_cols = [c for c in df.columns if c.startswith('ob_')]
+    if micro_cols:
+        add_df = df[micro_cols].reindex(feat_df.index)
+        feat_df = feat_df.join(add_df, how='left')
+        logger.info(f"Added microstructure columns to feature matrix: {len(micro_cols)}")
     # Align
     common_index = feat_df.index.intersection(df.index)
     X = feat_df.loc[common_index]
     y = df.loc[common_index, 'label']
-    # Drop rows with any NA
-    mask = ~X.isna().any(axis=1)
-    X, y = X[mask], y[mask]
+    # New NA handling (Option 1): only enforce non-NaN on core features; impute microstructure NAs.
+    core_cols = [c for c in X.columns if not c.startswith('ob_')]
+    micro_cols_in_X = [c for c in X.columns if c.startswith('ob_')]
+    if micro_cols_in_X:
+        na_before = X[micro_cols_in_X].isna().sum().sum()
+        # Forward fill then back fill then zero for remaining
+        X.loc[:, micro_cols_in_X] = (X[micro_cols_in_X]
+                                     .ffill()
+                                     .bfill()
+                                     .fillna(0))
+        na_after = X[micro_cols_in_X].isna().sum().sum()
+        logger.info(f"Microstructure imputation applied (na_before={na_before}, na_after={na_after})")
+    # Drop rows only if core features have NaNs
+    core_mask = ~X[core_cols].isna().any(axis=1)
+    dropped_rows = len(X) - core_mask.sum()
+    if dropped_rows > 0:
+        logger.warning(f"Dropped {dropped_rows} rows due to core feature NaNs")
+    X, y = X[core_mask], y[core_mask]
     if not _class_balance_ok(y):
         logger.error("Class balance failed criteria")
         return False

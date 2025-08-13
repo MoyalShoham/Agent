@@ -1,0 +1,3 @@
+2025-08-12 23:44:32.145 | INFO     | __main__:process_once:57 - Active FUTURES_SYMBOLS: ['ADAUSDT', 'APTUSDT', 'ARBUSDT', 'AVAXUSDT', 'BNBUSDT', 'BTCUSDT', 'CHRUSDT', 'DOGEUSDT', 'DOGSUSDT', 'DUSKUSDT', 'ETHUSDT', 'HIFIUSDT', 'ICPUSDT', 'LINKUSDT', 'NEARUSDT', 'ONDOUSDT', 'OPUSDT', 'PLAYUSDT', 'RENDERUSDT', 'RSRUSDT', 'SOLUSDT', 'SPELLUSDT', 'TAGUSDT', 'TAUUSDT', 'TRUUSDT', 'TRXUSDT', 'UNIUSDT', 'XRPUSDT', 'YALAUSDT']
+2025-08-12 23:44:32.146 | INFO     | __main__:process_once:104 - Flattened symbols: []
+2025-08-12 23:44:32.147 | INFO     | __main__:process_once:105 - Skipped (still active): []
