@@ -90,7 +90,6 @@ class EnhancedMLSignalGenerator:
         """Calculate comprehensive technical indicators and features"""
         if len(df) < 50:
             return pd.DataFrame()
-        
         try:
             features = pd.DataFrame(index=df.index)
             
@@ -228,13 +227,11 @@ class EnhancedMLSignalGenerator:
             # Remove infinite and NaN values
             features = features.replace([np.inf, -np.inf], np.nan)
             features = features.fillna(method='ffill').fillna(0)
-            
-            # Store feature names
-            self.feature_names = list(features.columns)
-            
-            logger.info(f"Calculated {len(self.feature_names)} advanced features")
+            # Only set feature_names here if model not yet trained to avoid overwriting trained schema (which may include microstructure columns)
+            if not self.is_trained:
+                self.feature_names = list(features.columns)
+            logger.info(f"Calculated {len(features.columns)} advanced features")
             return features
-            
         except Exception as e:
             logger.error(f"Error calculating advanced features: {e}")
             return pd.DataFrame()
@@ -300,48 +297,105 @@ class EnhancedMLSignalGenerator:
         
         return adx
 
+    def _load_latest_microstructure(self, symbol: str, ref_ts: pd.Timestamp) -> dict:
+        """Load latest microstructure features for symbol (<= ref_ts). Returns dict with ob_ prefixed keys.
+        Falls back to empty dict if file or row missing."""
+        try:
+            data_dir = os.environ.get('OB_DATA_DIR', 'data/orderbook')
+            primary_symbol = os.environ.get('FUTURES_SYMBOLS', symbol).split(',')[0].strip().upper()
+            path = os.path.join(data_dir, f"{primary_symbol}_5m_features.csv")
+            if not os.path.exists(path):
+                return {}
+            # Read only needed columns (performance: read entire small file assumed). Parse timestamp.
+            ob = pd.read_csv(path)
+            if 'timestamp' not in ob.columns:
+                return {}
+            ob['timestamp'] = pd.to_datetime(ob['timestamp'], utc=True, errors='coerce')
+            ob = ob.dropna(subset=['timestamp']).sort_values('timestamp')
+            # Select last row up to ref_ts (ensure ref_ts is UTC)
+            if ref_ts.tz is None:
+                ref_ts = ref_ts.tz_localize('UTC')
+            row = ob[ob['timestamp'] <= ref_ts].tail(1)
+            if row.empty:
+                # maybe ahead of microstructure generation; take last available
+                row = ob.tail(1)
+            row = row.drop(columns=['timestamp'])
+            # Prefix columns to match training merge convention
+            row_prefixed = row.add_prefix('ob_')
+            return row_prefixed.iloc[0].to_dict()
+        except Exception as e:
+            logger.debug(f"Live microstructure load failed: {e}")
+            return {}
+
     def generate_enhanced_signal(self, symbol: str, price_data: pd.DataFrame) -> Dict[str, Any]:
-        """Generate enhanced ML signal with confidence and analysis"""
+        """Generate enhanced ML signal with confidence and analysis. Auto-train if needed."""
+        import subprocess
         try:
             if not self.is_trained:
-                logger.warning("Models not trained. Using default signal.")
-                return {
-                    'enhanced_signal': 0,
-                    'confidence': 0.3,
-                    'probabilities': {'buy': 0.33, 'hold': 0.34, 'sell': 0.33},
-                    'reasoning': 'Models not trained - using neutral signal',
-                    'feature_analysis': {},
-                    'model_votes': {},
-                    'risk_score': 0.5,
-                    'market_regime': 'unknown'
-                }
-            
+                logger.warning("Models not trained. Attempting auto-training...")
+                try:
+                    # Attempt to train the model by running the training script
+                    result = subprocess.run([
+                        'python', 'train_ml_model.py'
+                    ], capture_output=True, text=True, timeout=600)
+                    if result.returncode == 0:
+                        logger.info("Auto-training complete. Reloading model...")
+                        self.load_model()
+                    else:
+                        logger.error(f"Auto-training failed: {result.stderr}")
+                except Exception as train_exc:
+                    logger.error(f"Auto-training exception: {train_exc}")
+                if not self.is_trained:
+                    logger.error("Model still not trained after auto-training. Returning neutral signal.")
+                    return {
+                        'enhanced_signal': 0,
+                        'confidence': 0.3,
+                        'probabilities': {'buy': 0.33, 'hold': 0.34, 'sell': 0.33},
+                        'reasoning': 'Models not trained - using neutral signal',
+                        'feature_analysis': {},
+                        'model_votes': {},
+                        'risk_score': 0.5,
+                        'market_regime': 'unknown'
+                    }
             # Calculate features
             features = self.calculate_advanced_features(price_data)
-            
             if features.empty:
                 logger.warning("Feature calculation failed")
                 return self._default_signal("Feature calculation failed")
-            
-            # Get latest features
-            latest_features = features.iloc[-1:][self.feature_names]
-            
-            if latest_features.isnull().any().any():
-                logger.warning("Latest features contain NaN values")
-                return self._default_signal("Invalid feature values")
-            
+            expected_cols = self.feature_names if self.feature_names else list(features.columns)
+            latest = features.iloc[-1:].copy()
+            # Inject live microstructure values if expected ob_ columns present
+            if any(col.startswith('ob_') for col in expected_cols):
+                live_micro = self._load_latest_microstructure(symbol, latest.index[-1])
+                if live_micro:
+                    for k, v in live_micro.items():
+                        latest[k] = v
+                    logger.debug(f"Injected {len(live_micro)} live microstructure fields")
+                else:
+                    logger.debug("No live microstructure data available (using zeros later if needed)")
+            # Add missing expected columns with 0.0
+            missing = [c for c in expected_cols if c not in latest.columns]
+            if missing:
+                for c in missing:
+                    latest[c] = 0.0
+                logger.debug(f"Added {len(missing)} missing feature columns (filled with 0)")
+            # Drop unexpected extra columns
+            extra = [c for c in latest.columns if c not in expected_cols]
+            if extra:
+                latest.drop(columns=extra, inplace=True)
+                logger.debug(f"Dropped {len(extra)} unexpected extra feature columns")
+            latest = latest[expected_cols]
+            if latest.isna().any().any():
+                latest = latest.fillna(0)
+            latest_features = latest
             # Get predictions from all models
             model_predictions = {}
             model_probabilities = {}
-            
             for model_name, model in self.models.items():
                 try:
-                    # Scale features
                     X_scaled = self.scalers[model_name].transform(latest_features.values)
-                    
                     # Get prediction
                     prediction = model.predict(X_scaled)[0]
-                    
                     # Get probabilities if available
                     if hasattr(model, 'predict_proba'):
                         proba = model.predict_proba(X_scaled)[0]
@@ -367,33 +421,26 @@ class EnhancedMLSignalGenerator:
                             model_probabilities[model_name] = {'sell': confidence, 'hold': (1-confidence)/2, 'buy': (1-confidence)/2}
                         else:
                             model_probabilities[model_name] = {'hold': confidence, 'buy': (1-confidence)/2, 'sell': (1-confidence)/2}
-                    
                     model_predictions[model_name] = prediction
-                    
                 except Exception as e:
                     logger.error(f"Prediction failed for {model_name}: {e}")
                     model_predictions[model_name] = 0
                     model_probabilities[model_name] = {'buy': 0.33, 'hold': 0.34, 'sell': 0.33}
-            
             # Ensemble prediction using weighted voting
             ensemble_probabilities = {'buy': 0.0, 'hold': 0.0, 'sell': 0.0}
             total_weight = 0.0
-            
             for model_name, proba in model_probabilities.items():
                 weight = self.model_weights.get(model_name, 0.25)
                 total_weight += weight
                 for action, prob in proba.items():
                     ensemble_probabilities[action] += prob * weight
-            
             # Normalize probabilities
             if total_weight > 0:
                 for action in ensemble_probabilities:
                     ensemble_probabilities[action] /= total_weight
-            
             # Determine final signal
             max_prob_action = max(ensemble_probabilities, key=ensemble_probabilities.get)
             max_prob = ensemble_probabilities[max_prob_action]
-            
             # Convert to numeric signal
             if max_prob_action == 'buy':
                 signal = 1

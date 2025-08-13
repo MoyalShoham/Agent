@@ -2,6 +2,9 @@
 /futures_trades_log.csv
 /trade_log.csv
 # Ignore log files and trading logs
+/*.csv
+/OPTIMIZATION_COMPLETE.md
+/*.pkl
 
 *.log
 *.log.*
