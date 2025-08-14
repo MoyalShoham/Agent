@@ -1,4 +1,4 @@
-/.env
+*.env
 /futures_trades_log.csv
 /trade_log.csv
 # Ignore log files and trading logs

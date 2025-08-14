@@ -20,7 +20,7 @@ except ImportError:
 
 
 class AIEnhancedMLSignalGenerator:
-    def __init__(self, model_path: str = "ml_model.pkl"):
+    def __init__(self, model_path: str = "data/ml_model.pkl"):
         self.model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.scaler = StandardScaler()
         self.is_trained = False
@@ -212,7 +212,7 @@ async def generate_ai_enhanced_ml_signal(symbol: str, price_data: Optional[pd.Da
     global _signal_generator
     if _signal_generator is None:
         try:
-            _signal_generator = AIEnhancedMLSignalGenerator(model_path=os.getenv('AI_ML_MODEL_PATH', 'ml_model.pkl'))
+            _signal_generator = AIEnhancedMLSignalGenerator(model_path=os.getenv('AI_ML_MODEL_PATH', 'data/ml_model.pkl'))
         except Exception as e:
             logger.error(f"[AI_ENHANCED_INIT] Failed to init generator: {e}")
             return {"enhanced_signal": 0, "confidence": 0.3, "reasoning": "init failure", "risk_factors": ["init_error"]}

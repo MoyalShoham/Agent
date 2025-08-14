@@ -35,7 +35,7 @@ def _import_generator():
             raise
 
 def _load_historical_data() -> pd.DataFrame | None:
-    data_files = ['BTCUSDT_1h.csv', 'trade_log_clean.csv', 'trade_log.csv']
+    data_files = ['futures_trades_log_fixed.csv', 'futures_trades_log.csv', 'BTCUSDT_1h.csv', 'trade_log_clean.csv', 'trade_log.csv']
     for file in data_files:
         if os.path.exists(file):
             try:
